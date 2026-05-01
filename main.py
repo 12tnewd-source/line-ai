@@ -4,16 +4,21 @@ import os
 
 app = FastAPI()
 
+# 環境変数から取得
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 
 @app.post("/callback")
 async def callback(request: Request):
     body = await request.json()
 
-    for event in body["events"]:
-        if event["type"] != "message":
+    print("=== 受信データ ===")
+    print(body)
+
+    for event in body.get("events", []):
+        if event.get("type") != "message":
             continue
-        if event["message"]["type"] != "text":
+
+        if event["message"].get("type") != "text":
             continue
 
         reply_token = event["replyToken"]
@@ -29,15 +34,19 @@ async def callback(request: Request):
             "messages": [
                 {
                     "type": "text",
-                    "text": f"お前「{user_msg}」って言ったなｗ"
+                    "text": f"お前『{user_msg}』って言ったなｗ"
                 }
             ]
         }
 
-        requests.post(
+        res = requests.post(
             "https://api.line.me/v2/bot/message/reply",
             headers=headers,
             json=data
         )
+
+        print("=== LINE返信結果 ===")
+        print("status:", res.status_code)
+        print("body:", res.text)
 
     return "OK"
