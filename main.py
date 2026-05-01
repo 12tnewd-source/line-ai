@@ -7,6 +7,8 @@ app = FastAPI()
 # 環境変数から取得
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 
+print("TOKEN:", LINE_ACCESS_TOKEN)
+
 @app.post("/callback")
 async def callback(request: Request):
     body = await request.json()
