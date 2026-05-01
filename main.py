@@ -4,7 +4,9 @@ import os
 
 app = FastAPI()
 
-LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")@app.post("/callback")
+LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
+
+@app.post("/callback")
 async def callback(request: Request):
     body = await request.json()
 
@@ -24,10 +26,12 @@ async def callback(request: Request):
 
         data = {
             "replyToken": reply_token,
-            "messages": [{
-                "type": "text",
-                "text": "動いたで！"
-            }]
+            "messages": [
+                {
+                    "type": "text",
+                    "text": f"お前「{user_msg}」って言ったなｗ"
+                }
+            ]
         }
 
         requests.post(
