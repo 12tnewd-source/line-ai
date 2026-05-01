@@ -33,9 +33,8 @@ async def callback(request: Request):
         }
 
         print("HEADER:", headers)
-
         print("TOKEN RAW:", LINE_ACCESS_TOKEN)
-print("TOKEN LENGTH:", len(LINE_ACCESS_TOKEN))
+        print("TOKEN LENGTH:", len(LINE_ACCESS_TOKEN))
 
         data = {
             "replyToken": reply_token,
