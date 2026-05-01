@@ -1,12 +1,23 @@
-import os, random, json, time, requests
+import os, random, json, time
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from openai import OpenAI
 
+# LINE SDK
+from linebot import LineBotApi, WebhookHandler
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.exceptions import InvalidSignatureError
+
 app = FastAPI()
+
+# ===== API =====
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 users = {}
 
@@ -33,11 +44,15 @@ def get_user(uid):
         users[uid] = {
             "name":"お前",
             "paid":False,
+
             "emotion":{"positive":0.5,"negative":0.5},
             "memory":[],
             "relation":{"distance":0.0},
             "experience":{"success":[],"fail":[]},
             "style":{"tsukkomi":1.0,"sarcasm":1.0,"self_deprecate":1.0},
+
+            "history":[],
+
             "interest_flag":False,
             "interest_time":0
         }
@@ -48,11 +63,8 @@ def get_user(uid):
 # =========================
 TEMPLATES = {
     "tsukkomi":["いやそれどういうことやねんｗ","話飛びすぎやろｗ"],
-    "sarcasm":["なるほどな天才の発想やな（逆）"],
-    "self_deprecate":["まぁワシが言うのもなんか違うけどなｗ"],
     "soft_exit":["おおｗ全然ええでｗまた来いｗ","まぁ今日はここまでやなｗ"],
-    "reoffer":["そういやさっきのやつ、まだ気になってる？ｗ"],
-    "paid_intro":["エンジン温まってきたでーｗ","ほなちょいギア上げるで"]
+    "reoffer":["そういやさっきのやつ、まだ気になってる？ｗ"]
 }
 
 # =========================
@@ -70,9 +82,27 @@ def store_memory(user, text):
 def pick_memory(user):
     return random.choice(user["memory"]) if user["memory"] else None
 
+# ===== 履歴 =====
+def build_history(user):
+    history_text = ""
+    for h in user["history"]:
+        history_text += f"ユーザー:{h['user']}\nAI:{h['ai']}\n"
+    return history_text
+
+def update_history(user, user_text, ai_text):
+    user["history"].append({"user":user_text,"ai":ai_text})
+    user["history"] = user["history"][-5:]
+
+# =========================
+# ■ AI
+# =========================
 def call_ai(user, text):
     mem = pick_memory(user)
     mem_text = mem["text"] if mem else ""
+    history_text = build_history(user)
+
+    if len(text) > 100:
+        text = text[:100]
 
     prompt = f"""
 あなたは関西弁のツッコミAI。
@@ -80,18 +110,27 @@ def call_ai(user, text):
 短くテンポ良く返す。
 絶対に標準語にならない。
 
+過去の会話:
+{history_text}
+
+過去記憶:{mem_text}
+
 ユーザー:{user["name"]}
-過去:{mem_text}
 """
 
     res = client.responses.create(
         model="gpt-4.1-mini",
-        input=prompt + "\nユーザー:" + text
+        input=prompt + "\nユーザー:" + text,
+        max_output_tokens=80
     )
 
     return res.output_text
 
+# =========================
+# ■ メイン返信
+# =========================
 def reply(uid, text, name="お前"):
+
     user = get_user(uid)
     user["name"]=name
 
@@ -105,7 +144,10 @@ def reply(uid, text, name="お前"):
     if random.random()<0.3:
         base += "\n" + random.choice(TEMPLATES["tsukkomi"])
 
+    update_history(user, text, base)
+
     save()
+
     return base.replace("お前", user["name"])
 
 # =========================
@@ -113,40 +155,30 @@ def reply(uid, text, name="お前"):
 # =========================
 @app.post("/callback")
 async def callback(request: Request):
-    body = await request.json()
+    body = await request.body()
+    signature = request.headers.get("X-Line-Signature")
 
-    for event in body.get("events", []):
-        if event.get("type") != "message":
-            continue
-        if event["message"].get("type") != "text":
-            continue
+    try:
+        handler.handle(body.decode("utf-8"), signature)
+    except InvalidSignatureError:
+        return {"status": "invalid signature"}
 
-        reply_token = event["replyToken"]
-        user_msg = event["message"]["text"]
-        user_id = event["source"]["userId"]
+    return {"status": "ok"}
 
-        # AI生成
-        ai_text = reply(user_id, user_msg)
+# =========================
+# ■ LINEイベント
+# =========================
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    user_id = event.source.user_id
+    text = event.message.text
 
-        headers = {
-            "Authorization": f"Bearer {LINE_ACCESS_TOKEN}",
-            "Content-Type": "application/json"
-        }
+    ai_text = reply(user_id, text)
 
-        data = {
-            "replyToken": reply_token,
-            "messages": [
-                {"type": "text", "text": ai_text}
-            ]
-        }
-
-        requests.post(
-            "https://api.line.me/v2/bot/message/reply",
-            headers=headers,
-            json=data
-        )
-
-    return "OK"
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=ai_text)
+    )
 
 # =========================
 # ■ 起動
