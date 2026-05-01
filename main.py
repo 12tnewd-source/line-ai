@@ -1,4 +1,10 @@
-@app.post("/callback")
+from fastapi import FastAPI, Request
+import requests
+import os
+
+app = FastAPI()
+
+LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")@app.post("/callback")
 async def callback(request: Request):
     body = await request.json()
 
