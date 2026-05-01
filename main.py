@@ -5,7 +5,7 @@ import os
 app = FastAPI()
 
 # 環境変数から取得
-LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
+LINE_ACCESS_TOKEN = os.getenv("nrG7UTg4hOGmXpgceeIlK2NgC9B+PE/hGwyZ35yRWwTsJ0pHHRG2PkqaseiEWzcvGRkOPity8DBhjkmyzhmJAu1h0rnlb4ZxMYRh5Xmp6dDLQGohd2aRvM9NVqd5H5CW0K97SfQmltSMM+pqUyh8zgdB04t89/1O/w1cDnyilFU=")
 
 @app.post("/callback")
 async def callback(request: Request):
