@@ -32,6 +32,11 @@ async def callback(request: Request):
             "Content-Type": "application/json"
         }
 
+        print("HEADER:", headers)
+
+        print("TOKEN RAW:", LINE_ACCESS_TOKEN)
+print("TOKEN LENGTH:", len(LINE_ACCESS_TOKEN))
+
         data = {
             "replyToken": reply_token,
             "messages": [
