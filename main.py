@@ -5,7 +5,7 @@ import os
 app = FastAPI()
 
 # 環境変数から取得
-LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
+LINE_ACCESS_TOKEN = os.getenv("6h41NNLXlj9bQ4rnrD6zA2ZHwkogPQBA4zmThlv+hYHfwi7L+WseAEs6aZcqyx9nGRkOPity8DBhjkmyzhmJAu1h0rnlb4ZxMYRh5Xmp6dBfMP7aHz6mm7whitbd8H+tR7LdpvQ1fdFbES+6/zWnGQdB04t89/1O/w1cDnyilFU=")
 
 print("TOKEN:", LINE_ACCESS_TOKEN)
 
