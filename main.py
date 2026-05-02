@@ -161,18 +161,22 @@ def recall_memory(user, current_topic):
     return None
 
 # =========================
-# ズレ検知
+# 補助
 # =========================
 def detect_gap(text):
     weird_words = ["なんで", "急に", "意味わからん", "AI", "機械"]
-    for w in weird_words:
-        if w in text:
-            return True
+    return any(w in text for w in weird_words)
+
+def is_question(text):
+    return ("？" in text) or ("?" in text) or ("なんで" in text) or ("なに" in text)
+
+def is_gibberish(text):
+    if len(text.strip()) < 2:
+        return True
+    if all(c in "あいうえおアイウエオwｗ笑" for c in text):
+        return True
     return False
 
-# =========================
-# モード判定
-# =========================
 def decide_mode(user, analysis):
     if analysis["intent"] == "相談":
         return "care"
@@ -181,90 +185,68 @@ def decide_mode(user, analysis):
     return "normal"
 
 # =========================
-# 応答生成（融合版）
+# 応答生成（最適融合版）
 # =========================
 def generate(user, text, analysis):
+
+    # --- 意味不明は即返し ---
+    if is_gibberish(text):
+        return random.choice([
+            "意味わからんでｗ日本語で頼むわｗ",
+            "どうしたん？指バグった？ｗ",
+            "今の解読班呼ぶ？ｗ"
+        ])
 
     mode = decide_mode(user, analysis)
     recall = recall_memory(user, analysis.get("topic"))
     style = user["style"]
 
-    def stabilize(v, c=0.5, s=0.05):
-        return v + (c - v) * s
-
-    style["talk_speed"] = stabilize(style["talk_speed"] + random.uniform(-0.05,0.05))
-    style["density"] = stabilize(style["density"] + random.uniform(-0.05,0.05))
-    style["playfulness"] = stabilize(style["playfulness"] + random.uniform(-0.05,0.05))
-
     parts = []
     parts.append(f"ユーザー発言:{text}")
 
-    # ===== 役割 =====
-    base = random.random()
-    if user["relation"]["distance"] > 0.5:
-        base += 0.1
-    if analysis.get("emotion",0) > 0.4:
-        base += 0.1
-    base = min(base, 1.0)
+    # ===== 質問（丁寧回避＋逃げ防止）=====
+    if is_question(text):
+        q = random.random()
+        if q < 0.6:
+            parts.append("一言で答えてから軽く崩す")
+        elif q < 0.85:
+            parts.append("一言答えてすぐ軽くツッコむ")
+        else:
+            parts.append("少しズラして答えるが会話は成立させる")
 
-    if detect_gap(text):
-        main_role = "tsukkomi"
-    elif random.random() < 0.25:
-        main_role = "boke"
-    elif base > 0.75:
-        main_role = "opinion"
+    # ===== リアクション（強制しない）=====
+    action = random.random()
+
+    if detect_gap(text) and action < 0.7:
+        parts.append("違和感に一言ツッコんでから少しだけ広げる")
+    elif action < 0.45:
+        parts.append("気になった部分があれば軽く触れる")
     else:
-        main_role = "normal"
+        parts.append("そのまま自然に返す")
 
-    # ===== 会話芯 =====
-    parts.append("ユーザーの発言の中心にだけ反応する")
-    parts.append("無理に広げない")
-
-    # ===== リアクション制御 =====
-    action_roll = random.random()
-
-    if detect_gap(text) and action_roll < 0.7:
-        parts.append("違和感のある部分にだけ短くツッコむ")
-    elif action_roll < 0.45:
-        parts.append("気になった部分があればそこだけ軽く触れる")
-    else:
-        parts.append("特に拾わず自然に返す")
-
-    # ===== ボケ =====
-    if main_role == "boke":
+    # ===== ボケ（控えめ）=====
+    if random.random() < 0.25:
         parts.append(random.choice([
             "少し大げさにする",
-            "変な例えを一瞬入れる",
-            "ありえない仮定を軽く出す"
+            "一瞬だけ変な例えを入れる",
+            "ありえない前提を軽く出す"
         ]))
-
-    # ===== 共感 =====
-    if analysis.get("emotion",0) < -0.3:
-        parts.append("一言だけ軽く共感する")
 
     # ===== 記憶 =====
     if recall and user["relation"]["distance"] > 0.4:
-        parts.append(f"前の話題を軽く出す:{recall['topic']}")
+        parts.append(f"前の話題を少しだけ混ぜる:{recall['topic']}")
 
-    # ===== テンション =====
+    # ===== 感情 =====
+    if analysis.get("emotion",0) < -0.3:
+        parts.append("軽く共感する")
+
+    # ===== トーン =====
     if user["mood"] > 0.5:
         parts.append("少しテンポよく")
     elif user["mood"] < -0.5:
-        parts.append("落ち着いたトーン")
+        parts.append("落ち着いて返す")
 
-    # ===== ツッコミ強化 =====
-    if main_role == "tsukkomi":
-        parts.append("一言で軽くツッコむ")
-
-    # ===== スタイル =====
-    if style["playfulness"] > 0.6:
-        parts.append("少しだけふざける")
-
-    # ===== モード =====
-    if mode == "care":
-        parts.append("優しめで寄り添う")
-
-    # ===== 出力制約 =====
+    # ===== 出力 =====
     parts.append("関西弁で1〜2文")
     parts.append("短く")
     parts.append("説明しない")
@@ -307,7 +289,6 @@ def ui():
     <div style="height:300px;overflow:auto;border:1px solid #ccc;padding:10px;">
         {chat_html}
     </div>
-
     <form action="/test" method="post">
         <input name="text" style="width:70%;">
         <button type="submit">送信</button>
@@ -318,7 +299,6 @@ def ui():
 async def test(request: Request):
     form = await request.form()
     text = form.get("text")
-
     if not text:
         return HTMLResponse("なんか入れろやｗ")
 
