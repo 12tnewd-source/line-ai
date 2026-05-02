@@ -47,7 +47,7 @@ def get_user(uid):
             "history":[],
             "mood":0.0,
             "relation":{"distance":0.0},
-            "style": random.choice(["tsukkomi","empathy","thinker","chaos"])
+            "style":{"talk_speed":0.5,"density":0.5,"playfulness":0.5}
         }
     return users[uid]
 
@@ -75,7 +75,7 @@ def ai_talk(prompt):
         res = client.responses.create(
             model="gpt-4.1-mini",
             input=prompt,
-            max_output_tokens=60
+            max_output_tokens=80
         )
         return safe_get_text(res)
     except Exception as e:
@@ -136,7 +136,7 @@ def update_relation(user, intent):
     user["relation"]["distance"] = min(1, user["relation"]["distance"])
 
 # =========================
-# 記憶保存
+# 記憶
 # =========================
 def store_memory(user, analysis):
     mem = {
@@ -146,32 +146,32 @@ def store_memory(user, analysis):
     user["memory"].append(mem)
     user["memory"] = user["memory"][-20:]
 
-# =========================
-# 記憶スコア
-# =========================
 def recall_memory(user, current_topic):
     scored = []
-
     for m in user["memory"]:
         score = 0
-
         if current_topic and current_topic in m.get("topic",""):
             score += 2
-
-        score += 0.3
-        score += abs(m.get("emotion",0))
-
+        score += 0.3 + abs(m.get("emotion",0))
         scored.append((score, m))
 
     scored.sort(reverse=True, key=lambda x: x[0])
-
     if scored and scored[0][0] > 1.2:
         return scored[0][1]
-
     return None
 
 # =========================
-# ノリ判定
+# ズレ検知
+# =========================
+def detect_gap(text):
+    weird_words = ["なんで", "急に", "意味わからん", "AI", "機械"]
+    for w in weird_words:
+        if w in text:
+            return True
+    return False
+
+# =========================
+# モード判定
 # =========================
 def decide_mode(user, analysis):
     if analysis["intent"] == "相談":
@@ -181,75 +181,93 @@ def decide_mode(user, analysis):
     return "normal"
 
 # =========================
-# 応答生成（style融合版）
+# 応答生成（融合版）
 # =========================
 def generate(user, text, analysis):
 
     mode = decide_mode(user, analysis)
     recall = recall_memory(user, analysis.get("topic"))
-    base_style = user.get("style","normal")
+    style = user["style"]
+
+    def stabilize(v, c=0.5, s=0.05):
+        return v + (c - v) * s
+
+    style["talk_speed"] = stabilize(style["talk_speed"] + random.uniform(-0.05,0.05))
+    style["density"] = stabilize(style["density"] + random.uniform(-0.05,0.05))
+    style["playfulness"] = stabilize(style["playfulness"] + random.uniform(-0.05,0.05))
 
     parts = []
     parts.append(f"ユーザー発言:{text}")
 
-    # ===== ベース人格 =====
-    if base_style == "tsukkomi":
-        parts.append("基本はツッコミ気質で返す")
-    elif base_style == "empathy":
-        parts.append("基本は共感寄りで返す")
-    elif base_style == "thinker":
-        parts.append("少し考えるタイプで返す")
-    elif base_style == "chaos":
-        parts.append("少し自由で読めない感じで返す")
+    # ===== 役割 =====
+    base = random.random()
+    if user["relation"]["distance"] > 0.5:
+        base += 0.1
+    if analysis.get("emotion",0) > 0.4:
+        base += 0.1
+    base = min(base, 1.0)
 
-    # ===== スパイス（30%だけ発動）=====
-    if random.random() < 0.3:
-        turn_type = random.random()
-
-        if turn_type < 0.25:
-            parts.append("一言だけ自然に共感する")
-        elif turn_type < 0.5:
-            parts.append("軽くツッコむ")
-        elif turn_type < 0.75:
-            parts.append("少しだけ意外な視点を出す")
-        else:
-            parts.append("短く質問する")
-
-    # 会話芯
-    parts.append("ユーザーの発言の中心に反応する")
-    parts.append("たまに少しズレてもいい")
-
-    # 主導権
-    if random.random() < 0.25:
-        parts.append("少しだけ自分の意見を混ぜてもいい")
-
-    # 言葉拾い
-    if random.random() < 0.3:
-        parts.append("ユーザーの言葉を少しだけ自然に使う")
-
-    # モード
-    if mode == "care":
-        parts.append("優しく短く返す")
-    elif mode == "fun":
-        parts.append("少しノリよく")
+    if detect_gap(text):
+        main_role = "tsukkomi"
+    elif random.random() < 0.25:
+        main_role = "boke"
+    elif base > 0.75:
+        main_role = "opinion"
     else:
-        parts.append("自然体で返す")
+        main_role = "normal"
 
-    # テンション
+    # ===== 会話芯 =====
+    parts.append("ユーザーの発言の中心にだけ反応する")
+    parts.append("無理に広げない")
+
+    # ===== リアクション制御 =====
+    action_roll = random.random()
+
+    if detect_gap(text) and action_roll < 0.7:
+        parts.append("違和感のある部分にだけ短くツッコむ")
+    elif action_roll < 0.45:
+        parts.append("気になった部分があればそこだけ軽く触れる")
+    else:
+        parts.append("特に拾わず自然に返す")
+
+    # ===== ボケ =====
+    if main_role == "boke":
+        parts.append(random.choice([
+            "少し大げさにする",
+            "変な例えを一瞬入れる",
+            "ありえない仮定を軽く出す"
+        ]))
+
+    # ===== 共感 =====
+    if analysis.get("emotion",0) < -0.3:
+        parts.append("一言だけ軽く共感する")
+
+    # ===== 記憶 =====
+    if recall and user["relation"]["distance"] > 0.4:
+        parts.append(f"前の話題を軽く出す:{recall['topic']}")
+
+    # ===== テンション =====
     if user["mood"] > 0.5:
-        parts.append("テンション少し高め、でもやりすぎない")
-    elif user["mood"] < -0.4:
-        parts.append("少し落ち着いたトーン")
+        parts.append("少しテンポよく")
+    elif user["mood"] < -0.5:
+        parts.append("落ち着いたトーン")
 
-    # 記憶
-    if recall and random.random() < 0.3:
-        parts.append(f"自然に少しだけ過去の話題に触れてもいい:{recall['topic']}")
+    # ===== ツッコミ強化 =====
+    if main_role == "tsukkomi":
+        parts.append("一言で軽くツッコむ")
 
-    # 出力
+    # ===== スタイル =====
+    if style["playfulness"] > 0.6:
+        parts.append("少しだけふざける")
+
+    # ===== モード =====
+    if mode == "care":
+        parts.append("優しめで寄り添う")
+
+    # ===== 出力制約 =====
     parts.append("関西弁で1〜2文")
     parts.append("短く")
     parts.append("説明しない")
-    parts.append("余白を残す")
 
     return ai_talk("\n".join(parts))
 
