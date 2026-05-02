@@ -68,7 +68,7 @@ def update_history(user, u, a):
     user["history"] = user["history"][-10:]
 
 # =========================
-# スコア更新
+# スコア
 # =========================
 def update_score(user, text):
     s = user["score"]
@@ -104,7 +104,8 @@ def ai_talk(prompt, max_tokens):
             max_output_tokens=max_tokens
         )
         return safe_get_text(res)
-    except:
+    except Exception as e:
+        print("AI error:", e)
         return "ちょい調子悪いわｗ"
 
 # =========================
@@ -113,7 +114,7 @@ def ai_talk(prompt, max_tokens):
 def analyze(text):
     return {
         "gap": any(k in text for k in ["なんで","意味わからん","急に"]),
-        "topic": text[:8]
+        "topic": text[:8],
     }
 
 # =========================
@@ -166,12 +167,12 @@ def generate(user, text, a):
     mode = decide_mode(user)
     recall = recall_memory(user)
 
-    rules = ["関西弁", "ユーザー発言の一つに反応する"]
+    rules = ["関西弁", "ユーザー発言の一つにだけ反応する"]
 
-    # ===== state =====
+    # ===== 状態 =====
     if state == "laugh":
         max_tokens = 40
-        rules += ["短くテンポよく","1文でもOK","軽くノる"]
+        rules += ["短くテンポよく","軽くノる"]
 
     elif state == "question":
         max_tokens = 70
@@ -179,51 +180,44 @@ def generate(user, text, a):
 
     else:
         max_tokens = 50
-        rules += ["1文目で反応","2文目で少し広げる"]
+        rules += ["1文目で反応","2文目で軽く広げる"]
 
-    # ===== ツッコミ（最優先）=====
+    # ===== モード =====
+    if mode in ["light","flow"]:
+        rules.append("軸を保ったまま自然に広げる")
+    elif mode == "free":
+        rules.append("違和感が出ない範囲で少し自由に発想してよい")
+
+    # ===== ボケ（制御付き）=====
+    roll = random.random()
+    if mode in ["boke","free"] and roll < (0.3 + user["score"]["boke"]*0.4):
+        rules.append("軸に関連した軽いズレで少し面白くする")
+
+    # ===== 視点ズラし =====
+    elif roll < (0.25 + user["score"]["boke"]*0.3):
+        rules.append("同じ話題内で軽く違う視点に変えて返す")
+
+    # ===== 流れ =====
+    if user["flow"]["momentum"] > 0.7:
+        rules.append("ユーザーのテンションに合わせる")
+
+    # ===== イジり =====
+    if user["relation"]["distance"] > 0.4 and random.random() < 0.25:
+        rules.append("軽くイジるがすぐ自然に戻す")
+
+    # ===== ツッコミ =====
     if a["gap"] and random.random() < user["score"]["tsukkomi"]:
         return random.choice([
             "なんでやねんｗ",
             "急にどうしたｗ"
         ])
 
-    # ===== mode =====
-    if mode in ["light","flow"]:
-        rules.append("関連する範囲で自然に広げる")
-    elif mode == "free":
-        rules.append("少し自由に発想してよい")
-
-    # ===== 爆発 or 視点ズラし（排他）=====
-    roll = random.random()
-    trigger = 0.3 + user["score"]["boke"] * 0.4
-
-    if mode in ["free","boke"] and roll < trigger:
-        rules.append("一瞬だけズレた発想を入れて自然に戻す")
-
-    elif roll < (0.25 + user["score"]["boke"] * 0.3):
-        if user["flow"]["momentum"] > 0.6:
-            rules.append("少しズラしてそのままノリを広げる")
-        elif user["relation"]["distance"] > 0.4:
-            rules.append("少しズラして軽くイジる")
-        else:
-            rules.append("少しズラして元に戻す")
-
-    # ===== 流れ強化 =====
-    if user["flow"]["momentum"] > 0.7:
-        rules.append("テンションや言い回しを強めに合わせる")
-
-    # ===== イジり =====
-    if user["relation"]["distance"] > 0.4 and random.random() < 0.25:
-        rules.append("軽くイジって自然に流す")
-
     # ===== 記憶 =====
     if recall and random.random() < 0.2:
-        rules.append(f"過去の話題({recall['topic']})を軽く絡める")
+        if recall.get("topic"):
+            rules.append(f"過去の話題({recall['topic']})を軽く混ぜる")
 
-    # ===== 最終 =====
-    if state != "laugh":
-        rules.append("ダラダラせず短く")
+    rules.append("ダラダラせず短く")
 
     prompt = f"""
 ユーザー:{text}
