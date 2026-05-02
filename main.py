@@ -55,11 +55,7 @@ def get_user(uid):
                 "memory":[],
                 "history":[],
                 "relation":{"distance":0.0},
-                "score":{
-                    "boke":0.5,
-                    "tsukkomi":0.5,
-                    "memory_preference":0.5
-                },
+                "score":{"boke":0.5,"tsukkomi":0.5},
                 "flow":{"momentum":0.0}
             }
     return users[uid]
@@ -72,7 +68,7 @@ def update_history(user, u, a):
     user["history"] = user["history"][-10:]
 
 # =========================
-# スコア
+# スコア更新
 # =========================
 def update_score(user, text):
     s = user["score"]
@@ -100,12 +96,12 @@ def safe_get_text(res):
     except:
         return getattr(res, "output_text", "なんかバグったわｗ").strip()
 
-def ai_talk(prompt):
+def ai_talk(prompt, max_tokens):
     try:
         res = client.responses.create(
             model="gpt-4.1-mini",
             input=prompt,
-            max_output_tokens=80
+            max_output_tokens=max_tokens
         )
         return safe_get_text(res)
     except:
@@ -116,32 +112,20 @@ def ai_talk(prompt):
 # =========================
 def analyze(text):
     return {
-        "intent":"質問" if "?" in text or "？" in text else "雑談",
         "gap": any(k in text for k in ["なんで","意味わからん","急に"]),
         "topic": text[:8],
         "raw": text
     }
 
 # =========================
-# 記憶
+# 状態
 # =========================
-def store_memory(user, text, a):
-    user["memory"].append({
-        "topic":a["topic"],
-        "text":text
-    })
-    user["memory"] = user["memory"][-20:]
-
-def recall_memory(user, topic):
-    if not user["memory"]:
-        return None
-
-    related = [m for m in user["memory"] if topic in m["topic"]]
-
-    if related and random.random() < 0.7:
-        return random.choice(related)
-
-    return random.choice(user["memory"])
+def detect_state(text):
+    if "w" in text or "笑" in text:
+        return "laugh"
+    if "?" in text or "？" in text:
+        return "question"
+    return "normal"
 
 # =========================
 # モード
@@ -160,113 +144,78 @@ def decide_mode(user):
         return "free"
 
 # =========================
-# 自由発動判定（重要）
+# 記憶
 # =========================
-def should_free(user, a):
-    s = user["score"]
-    m = user["flow"]["momentum"]
+def store_memory(user, text, a):
+    user["memory"].append({"topic":a["topic"],"text":text})
+    user["memory"] = user["memory"][-20:]
 
-    if m > 0.6 and s["boke"] > 0.6:
-        return True
-
-    if "w" in a["raw"] or "笑" in a["raw"]:
-        return random.random() < 0.6
-
-    return random.random() < 0.15
+def recall_memory(user, topic):
+    if not user["memory"]:
+        return None
+    return random.choice(user["memory"])
 
 # =========================
-# ボケタイプ
-# =========================
-def pick_boke_type(user):
-    s = user["score"]
-
-    if s["boke"] > 0.7:
-        return "強めにズラす"
-    elif s["tsukkomi"] > 0.6:
-        return "軽く皮肉る"
-    else:
-        return "ゆるくボケる"
-
-# =========================
-# 記憶使用率
-# =========================
-def decide_memory_mix(user):
-    base = 0.7
-
-    if user["relation"]["distance"] > 0.5:
-        base -= 0.2
-
-    if user["flow"]["momentum"] > 0.6:
-        base -= 0.1
-
-    base -= user["score"]["memory_preference"] * 0.2
-    base += random.uniform(-0.1,0.1)
-
-    return max(0.3, min(0.9, base))
-
-# =========================
-# 応答生成
+# 応答生成（完成）
 # =========================
 def generate(user, text, a):
 
     if len(text.strip()) < 2:
-        return "何言うてるかちょい分からんわｗ"
+        return "何言うてるか分からんわｗ"
 
+    state = detect_state(text)
     mode = decide_mode(user)
     recall = recall_memory(user, a["topic"])
-    ratio = decide_memory_mix(user)
 
-    rules = ["関西弁"]
+    rules = ["関西弁", "ユーザー発言の一つに反応する"]
 
-    # 軸（固定）
-    rules.append("ユーザー発言の一つの要素を軸にする")
+    # ===== state（最優先）=====
+    if state == "laugh":
+        max_tokens = 40
+        rules += ["短くテンポよく","1文でもOK","軽くノる"]
 
-    # モード
-    if mode == "stable":
-        rules.append("軸から外れない")
-    elif mode in ["light","flow"]:
-        rules.append("軸を保ちながら関連する範囲で広げる")
-        rules.append("広げた場合は元に戻る")
+    elif state == "question":
+        max_tokens = 70
+        rules += ["1つ答える","その後軽く返す"]
+
+    else:
+        max_tokens = 50
+        rules += ["1文目で反応","2文目で少し広げる"]
+
+    # ===== mode（広がり）=====
+    if mode in ["light","flow"]:
+        rules.append("関連する範囲で少し広げる")
     elif mode == "free":
-        rules.append("少し自由に発想してよいが違和感は出さない")
+        rules.append("少し自由に発想してよい")
 
-    # 新規要素
-    rules.append("新しい要素はユーザー発言か記憶と関連させる")
+    # ===== ボケ =====
+    if mode in ["boke","free"] and random.random() < user["score"]["boke"]:
+        rules.append("少しズラして面白くする")
 
-    # 記憶
-    if recall and random.random() > ratio:
-        rules.append(f"過去の話題『{recall['topic']}』を軽く絡める")
-
-    # 自由ボケ（強化ポイント）
-    if mode in ["free","boke"] and should_free(user, a):
-        boke_type = pick_boke_type(user)
-        rules.append(f"{boke_type}で一瞬だけ発想を広げるが自然に戻す")
-
-    # 通常ボケ
-    elif random.random() < user["score"]["boke"]:
-        rules.append("軸を少しズラして軽く面白くする")
-
-    # ツッコミ
+    # ===== ツッコミ =====
     if a["gap"] and random.random() < user["score"]["tsukkomi"]:
         return random.choice([
-            "なんでやねんｗでどういうこと？",
-            "急すぎるやろｗ説明くれｗ"
+            "なんでやねんｗ",
+            "急にどうしたｗ"
         ])
 
-    # 流れ
-    if user["flow"]["momentum"] > 0.5:
-        rules.append("流れを優先して軽く乗る")
+    # ===== 記憶 =====
+    if recall and random.random() < 0.2:
+        rules.append(f"過去の話題({recall['topic']})を少しだけ絡める")
 
-    rules.append("1〜2文で自然に返す")
+    # ===== 最終制御 =====
+    if state != "laugh":
+        rules.append("ダラダラせず短く")
 
     prompt = f"""
 ユーザー:{text}
-ルール:{",".join(rules)}
 
-自然な会話を返せ
+・{",".join(rules)}
+
+返答：
 """
 
-    return ai_talk(prompt)
+    return ai_talk(prompt, max_tokens)
 
 # =========================
 # メイン
