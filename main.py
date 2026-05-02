@@ -124,7 +124,7 @@ def should_be_funny(user, analysis):
     return user["relation"]["distance"] > 0.3
 
 # =========================
-# ■ 応答（自然会話版）
+# ■ 応答（修正版）
 # =========================
 def generate_advanced(user, text, analysis):
 
@@ -133,23 +133,33 @@ def generate_advanced(user, text, analysis):
 
     parts = []
 
-    parts.append(f"ユーザー:{text}")
+    # 🔥 今の発言を絶対基準にする
+    parts.append(f"【今のユーザー発言】{text}")
 
+    # 🔥 主語固定
+    parts.append("ユーザーの発言に対してのみ返答する")
+    parts.append("過去の話は補助として軽く触れるだけ")
+
+    # ノリ
     if funny:
         parts.append("ノリよく軽くボケてツッコむ")
     else:
         parts.append("自然に優しく返す")
 
+    # 記憶は弱める
     if recall:
-        parts.append(f"前の話:{recall['topic']}")
+        parts.append(f"（参考程度の過去話題:{recall['topic']}）")
 
+    # 直前だけ軽く
     if user["history"]:
-        parts.append(f"直前:{user['history'][-1]['user']}")
+        parts.append(f"直前の流れ:{user['history'][-1]['user']}")
 
-    # ▼ここが最重要
+    # 出力制御
     parts.append("関西弁で一言か二言")
+    parts.append("今の発言にだけ反応しろ")
+    parts.append("話を勝手に広げすぎるな")
     parts.append("説明するな")
-    parts.append("会話っぽく")
+    parts.append("会話っぽく自然に")
     parts.append("軽くツッコめ")
     parts.append("箇条書き禁止")
     parts.append("番号使うな")
