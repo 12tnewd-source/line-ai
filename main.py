@@ -5,7 +5,6 @@ from openai import OpenAI
 
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from linebot.exceptions import InvalidSignatureError
 
 app = FastAPI()
 
@@ -156,7 +155,7 @@ def recall_memory(user):
     return random.choice(user["memory"])
 
 # =========================
-# 応答生成（最終）
+# 応答生成（最終：発想強化版）
 # =========================
 def generate(user, text, a):
 
@@ -171,15 +170,15 @@ def generate(user, text, a):
 
     # ===== 状態 =====
     if state == "laugh":
-        max_tokens = 40
+        max_tokens = random.choice([30, 40])
         rules += ["短くテンポよく","軽くノる"]
 
     elif state == "question":
-        max_tokens = 70
+        max_tokens = random.choice([60, 70])
         rules += ["1つ答える","その後軽く返す"]
 
     else:
-        max_tokens = 50
+        max_tokens = random.choice([45, 55])
         rules += ["1文目で反応","2文目で軽く広げる"]
 
     # ===== モード =====
@@ -188,14 +187,22 @@ def generate(user, text, a):
     elif mode == "free":
         rules.append("違和感が出ない範囲で少し自由に発想してよい")
 
-    # ===== ボケ（制御付き）=====
-    roll = random.random()
-    if mode in ["boke","free"] and roll < (0.3 + user["score"]["boke"]*0.4):
-        rules.append("軸に関連した軽いズレで少し面白くする")
+    # ===== 発想ジャンプ =====
+    IDEA_PATTERNS = [
+        "人間関係に例える",
+        "無機物に感情を持たせる",
+        "立場を少し逆転させる",
+        "少し大げさに誇張する",
+        "軽くズレた例えを使う"
+    ]
 
-    # ===== 視点ズラし =====
-    elif roll < (0.25 + user["score"]["boke"]*0.3):
-        rules.append("同じ話題内で軽く違う視点に変えて返す")
+    if random.random() < (0.25 + user["score"]["boke"]*0.3):
+        rules.append(random.choice(IDEA_PATTERNS))
+        rules.append("ズラした内容を一言で軽く回収する")
+
+    # ===== ボケ =====
+    if mode in ["boke","free"] and random.random() < user["score"]["boke"]:
+        rules.append("軸に関連した軽いズレで面白くする")
 
     # ===== 流れ =====
     if user["flow"]["momentum"] > 0.7:
@@ -203,21 +210,27 @@ def generate(user, text, a):
 
     # ===== イジり =====
     if user["relation"]["distance"] > 0.4 and random.random() < 0.25:
-        rules.append("軽くイジるがすぐ自然に戻す")
+        rules.append("軽くイジるが自然に戻す")
 
     # ===== ツッコミ =====
     if a["gap"] and random.random() < user["score"]["tsukkomi"]:
         return random.choice([
             "なんでやねんｗ",
-            "急にどうしたｗ"
+            "急にどうしたｗ",
+            "意味わからんでｗ"
         ])
 
     # ===== 記憶 =====
-    if recall and random.random() < 0.2:
+    if recall and random.random() < 0.15:
         if recall.get("topic"):
             rules.append(f"過去の話題({recall['topic']})を軽く混ぜる")
 
-    rules.append("ダラダラせず短く")
+    # ===== 語彙強化 =====
+    rules.append("同じ言い回しを避ける")
+    rules.append("具体的に表現する")
+
+    # ===== 最終 =====
+    rules.append("ダラダラせず自然に終わる")
 
     prompt = f"""
 ユーザー:{text}
