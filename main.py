@@ -46,7 +46,8 @@ def get_user(uid):
             "memory":[],
             "history":[],
             "mood":0.0,
-            "relation":{"distance":0.0}
+            "relation":{"distance":0.0},
+            "style": random.choice(["tsukkomi","empathy","thinker","chaos"])
         }
     return users[uid]
 
@@ -180,67 +181,75 @@ def decide_mode(user, analysis):
     return "normal"
 
 # =========================
-# 応答生成（改善融合版）
+# 応答生成（style融合版）
 # =========================
 def generate(user, text, analysis):
 
     mode = decide_mode(user, analysis)
     recall = recall_memory(user, analysis.get("topic"))
+    base_style = user.get("style","normal")
 
     parts = []
-
     parts.append(f"ユーザー発言:{text}")
 
-    # ===== 会話理解（柔らかく）=====
-    parts.append("ユーザーの発言の感情か出来事に自然に反応する")
-    parts.append("基本は中心に反応しつつ、たまに少しズレてもいい")
+    # ===== ベース人格 =====
+    if base_style == "tsukkomi":
+        parts.append("基本はツッコミ気質で返す")
+    elif base_style == "empathy":
+        parts.append("基本は共感寄りで返す")
+    elif base_style == "thinker":
+        parts.append("少し考えるタイプで返す")
+    elif base_style == "chaos":
+        parts.append("少し自由で読めない感じで返す")
 
-    # 言葉拾い（確率化）
-    if random.random() < 0.4:
-        parts.append("ユーザーの言葉を少しだけ自然に使ってもいい")
+    # ===== スパイス（30%だけ発動）=====
+    if random.random() < 0.3:
+        turn_type = random.random()
 
-    # 共感（確率）
-    if random.random() < 0.8:
-        parts.append("一言だけ軽く自然に共感する")
+        if turn_type < 0.25:
+            parts.append("一言だけ自然に共感する")
+        elif turn_type < 0.5:
+            parts.append("軽くツッコむ")
+        elif turn_type < 0.75:
+            parts.append("少しだけ意外な視点を出す")
+        else:
+            parts.append("短く質問する")
 
-    # 揺らぎ
-    tone = random.random()
+    # 会話芯
+    parts.append("ユーザーの発言の中心に反応する")
+    parts.append("たまに少しズレてもいい")
 
+    # 主導権
+    if random.random() < 0.25:
+        parts.append("少しだけ自分の意見を混ぜてもいい")
+
+    # 言葉拾い
+    if random.random() < 0.3:
+        parts.append("ユーザーの言葉を少しだけ自然に使う")
+
+    # モード
     if mode == "care":
         parts.append("優しく短く返す")
-
     elif mode == "fun":
-        if tone < 0.3:
-            parts.append("ちょい雑にツッコむ")
-        elif tone < 0.6:
-            parts.append("軽くツッコむ")
-        else:
-            parts.append("少しだけ優しめにツッコむ")
-
+        parts.append("少しノリよく")
     else:
-        if tone < 0.3:
-            parts.append("少し雑に返す")
-        elif tone < 0.7:
-            parts.append("自然に会話する")
-        else:
-            parts.append("軽く共感して返す")
+        parts.append("自然体で返す")
 
-    # mood反映
-    if user["mood"] < -0.3:
-        parts.append("少し落ち着いたトーンで返す")
-
-    if user["mood"] > 0.3:
-        parts.append("少しテンション高めで返す")
+    # テンション
+    if user["mood"] > 0.5:
+        parts.append("テンション少し高め、でもやりすぎない")
+    elif user["mood"] < -0.4:
+        parts.append("少し落ち着いたトーン")
 
     # 記憶
-    if recall:
+    if recall and random.random() < 0.3:
         parts.append(f"自然に少しだけ過去の話題に触れてもいい:{recall['topic']}")
 
-    # 出力制御
+    # 出力
     parts.append("関西弁で1〜2文")
     parts.append("短く")
     parts.append("説明しない")
-    parts.append("自然な会話を優先する")
+    parts.append("余白を残す")
 
     return ai_talk("\n".join(parts))
 
