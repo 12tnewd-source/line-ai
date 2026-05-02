@@ -133,12 +133,13 @@ def generate_advanced(user, text, analysis):
 
     parts = []
 
-    # 🔥 今の発言を絶対基準にする
-    parts.append(f"【今のユーザー発言】{text}")
+    # 今の発言を中心
+    parts.append(f"ユーザー:{text}")
 
-    # 🔥 主語固定
-    parts.append("ユーザーの発言に対してのみ返答する")
-    parts.append("過去の話は補助として軽く触れるだけ")
+    # 会話ルール（ここが改善ポイント）
+    parts.append("ユーザーの発言をちゃんと理解して反応する")
+    parts.append("1つだけ軽く質問かツッコミを返す")
+    parts.append("会話を続ける意識を持つ")
 
     # ノリ
     if funny:
@@ -146,24 +147,22 @@ def generate_advanced(user, text, analysis):
     else:
         parts.append("自然に優しく返す")
 
-    # 記憶は弱める
+    # 記憶は軽く
     if recall:
-        parts.append(f"（参考程度の過去話題:{recall['topic']}）")
+        parts.append(f"過去に少し関係ある話題:{recall['topic']}")
 
-    # 直前だけ軽く
+    # 直前の流れ
     if user["history"]:
-        parts.append(f"直前の流れ:{user['history'][-1]['user']}")
+        parts.append(f"直前:{user['history'][-1]['user']}")
 
     # 出力制御
-    parts.append("関西弁で一言か二言")
-    parts.append("今の発言にだけ反応しろ")
-    parts.append("話を勝手に広げすぎるな")
-    parts.append("説明するな")
-    parts.append("会話っぽく自然に")
-    parts.append("軽くツッコめ")
+    parts.append("関西弁で1〜2文")
+    parts.append("短くテンポ良く")
+    parts.append("説明しない")
+    parts.append("自然な会話にする")
     parts.append("箇条書き禁止")
-    parts.append("番号使うな")
-    parts.append("例: なんやそれｗ / マジかいなｗ")
+    parts.append("番号禁止")
+    parts.append("例: なんやそれｗ どうなったん？")
 
     prompt = "\n".join(parts)
 
