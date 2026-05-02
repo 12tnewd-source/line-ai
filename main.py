@@ -155,7 +155,7 @@ def recall_memory(user):
     return random.choice(user["memory"])
 
 # =========================
-# 応答生成（最終：発想強化版）
+# 応答生成（最終安定＋発想バランス版）
 # =========================
 def generate(user, text, a):
 
@@ -166,7 +166,12 @@ def generate(user, text, a):
     mode = decide_mode(user)
     recall = recall_memory(user)
 
-    rules = ["関西弁", "ユーザー発言の一つにだけ反応する"]
+    rules = [
+        "関西弁",
+        "ユーザー発言の一つにだけ反応する",
+        "話題はユーザー発言から外れない",
+        "自分から新しい話題を作らない"
+    ]
 
     # ===== 状態 =====
     if state == "laugh":
@@ -185,9 +190,9 @@ def generate(user, text, a):
     if mode in ["light","flow"]:
         rules.append("軸を保ったまま自然に広げる")
     elif mode == "free":
-        rules.append("違和感が出ない範囲で少し自由に発想してよい")
+        rules.append("違和感が出ない範囲で少し発想を広げる")
 
-    # ===== 発想ジャンプ =====
+    # ===== 発想ジャンプ（弱め制御）=====
     IDEA_PATTERNS = [
         "人間関係に例える",
         "無機物に感情を持たせる",
@@ -196,9 +201,10 @@ def generate(user, text, a):
         "軽くズレた例えを使う"
     ]
 
-    if random.random() < (0.25 + user["score"]["boke"]*0.3):
+    if random.random() < (0.15 + user["score"]["boke"]*0.25):
         rules.append(random.choice(IDEA_PATTERNS))
-        rules.append("ズラした内容を一言で軽く回収する")
+        rules.append("ズラしは1回だけ")
+        rules.append("すぐ元の話題に戻る")
 
     # ===== ボケ =====
     if mode in ["boke","free"] and random.random() < user["score"]["boke"]:
@@ -206,11 +212,7 @@ def generate(user, text, a):
 
     # ===== 流れ =====
     if user["flow"]["momentum"] > 0.7:
-        rules.append("ユーザーのテンションに合わせる")
-
-    # ===== イジり =====
-    if user["relation"]["distance"] > 0.4 and random.random() < 0.25:
-        rules.append("軽くイジるが自然に戻す")
+        rules.append("ユーザーのテンションに軽く合わせる")
 
     # ===== ツッコミ =====
     if a["gap"] and random.random() < user["score"]["tsukkomi"]:
