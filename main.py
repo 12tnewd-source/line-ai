@@ -155,7 +155,7 @@ def recall_memory(user):
     return random.choice(user["memory"])
 
 # =========================
-# 応答生成（最終安定＋発想バランス版）
+# 応答生成（安定＋発想制御 完成版）
 # =========================
 def generate(user, text, a):
 
@@ -169,8 +169,8 @@ def generate(user, text, a):
     rules = [
         "関西弁",
         "ユーザー発言の一つにだけ反応する",
-        "話題はユーザー発言から外れない",
-        "自分から新しい話題を作らない"
+        "ユーザー発言の内容を中心に会話を組む",
+        "ユーザーが言ってない要素は広げない"
     ]
 
     # ===== 状態 =====
@@ -190,9 +190,9 @@ def generate(user, text, a):
     if mode in ["light","flow"]:
         rules.append("軸を保ったまま自然に広げる")
     elif mode == "free":
-        rules.append("違和感が出ない範囲で少し発想を広げる")
+        rules.append("違和感が出ない範囲で発想してよい")
 
-    # ===== 発想ジャンプ（弱め制御）=====
+    # ===== 発想ジャンプ（修正版）=====
     IDEA_PATTERNS = [
         "人間関係に例える",
         "無機物に感情を持たせる",
@@ -201,10 +201,10 @@ def generate(user, text, a):
         "軽くズレた例えを使う"
     ]
 
-    if random.random() < (0.15 + user["score"]["boke"]*0.25):
+    if random.random() < (0.1 + user["score"]["boke"]*0.2):
         rules.append(random.choice(IDEA_PATTERNS))
-        rules.append("ズラしは1回だけ")
-        rules.append("すぐ元の話題に戻る")
+        rules.append("ズラしは1文以内で終わらせる")
+        rules.append("ズラした後はユーザー発言の内容に戻る")
 
     # ===== ボケ =====
     if mode in ["boke","free"] and random.random() < user["score"]["boke"]:
@@ -227,9 +227,9 @@ def generate(user, text, a):
         if recall.get("topic"):
             rules.append(f"過去の話題({recall['topic']})を軽く混ぜる")
 
-    # ===== 語彙強化 =====
+    # ===== 語彙制御 =====
     rules.append("同じ言い回しを避ける")
-    rules.append("具体的に表現する")
+    rules.append("具体的にしすぎず自然にする")
 
     # ===== 最終 =====
     rules.append("ダラダラせず自然に終わる")
