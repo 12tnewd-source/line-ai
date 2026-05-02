@@ -18,6 +18,9 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
+# ===== MODE切替 =====
+MODE = "advanced"  # "simple" or "advanced"
+
 users = {}
 
 # =========================
@@ -63,27 +66,26 @@ TEMPLATES = {
     ]
 }
 
-# =========================
-# ■ ロジック
-# =========================
 def detect_leave(text):
     return len(text.strip()) < 3
 
-# ===== 履歴 =====
+# =========================
+# ■ 履歴
+# =========================
 def build_history(user):
-    history_text = ""
-    for h in user["history"]:
-        history_text += f"ユーザー:{h['user']}\nAI:{h['ai']}\n"
-    return history_text
+    return "\n".join([f"ユーザー:{h['user']}\nAI:{h['ai']}" for h in user["history"]])
 
 def update_history(user, user_text, ai_text):
     user["history"].append({"user":user_text,"ai":ai_text})
-    user["history"] = user["history"][-6:]
+    user["history"] = user["history"][-5:]
 
 # =========================
-# ■ 意図解析（安定版）
+# ■ 解析
 # =========================
 def analyze(text):
+    if len(text) < 10:
+        return {"emotion":0,"topic":text,"intent":"雑談"}
+
     prompt = f"""
 必ずJSONのみで出力：
 {{
@@ -91,8 +93,68 @@ def analyze(text):
 "topic": "単語",
 "intent": "雑談/相談/報告/質問"
 }}
-
 文: {text}
+"""
+    try:
+        res = client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt,
+            max_output_tokens=60
+        )
+        data = json.loads(res.output_text)
+        return data
+    except:
+        return {"emotion":0,"topic":text[:6],"intent":"雑談"}
+
+# =========================
+# ■ 状態
+# =========================
+def update_mood(user, emotion):
+    user["mood"] = max(-1, min(1, user["mood"] + float(emotion)*0.3))
+
+def update_relation(user):
+    user["relation"]["distance"] = min(1, user["relation"]["distance"] + 0.02)
+
+# =========================
+# ■ 記憶
+# =========================
+def store_memory(user, analysis):
+    user["memory"].append(analysis)
+    user["memory"] = user["memory"][-20:]
+
+def add_pending(user, analysis):
+    if analysis.get("intent") in ["相談","報告"]:
+        user["pending_topics"].append(analysis)
+        user["pending_topics"] = user["pending_topics"][-10:]
+
+def maybe_recall(user):
+    if user["pending_topics"] and random.random() < 0.3:
+        return random.choice(user["pending_topics"])
+    return None
+
+# =========================
+# ■ フラグ（advanced用）
+# =========================
+def detect_request(text):
+    return any(k in text for k in ["して","やって","言って","教えて","みて"])
+
+def should_be_funny(user, analysis, text):
+    if detect_request(text):
+        return True
+    if analysis.get("intent") == "相談":
+        return False
+    return user["relation"]["distance"] > 0.4
+
+def should_lead(text, analysis):
+    return len(text) < 5 or analysis.get("intent") == "雑談"
+
+# =========================
+# ■ 応答（simple）
+# =========================
+def generate_simple(user, text, analysis):
+    prompt = f"""
+関西弁で自然に返す。短く1〜2文。
+ユーザー:{text}
 """
     try:
         res = client.responses.create(
@@ -100,118 +162,39 @@ def analyze(text):
             input=prompt,
             max_output_tokens=80
         )
-        data = json.loads(res.output_text)
-        return {
-            "emotion": float(data.get("emotion",0)),
-            "topic": str(data.get("topic","雑談")),
-            "intent": str(data.get("intent","雑談"))
-        }
+        return res.output_text.strip()
     except:
-        return {"emotion":0,"topic":text[:6],"intent":"雑談"}
+        return "ちょいバグったわｗ"
 
 # =========================
-# ■ 状態更新
+# ■ 応答（advanced）
 # =========================
-def update_mood(user, emotion):
-    try:
-        user["mood"] += float(emotion) * 0.3
-    except:
-        pass
-    user["mood"] = max(-1, min(1, user["mood"]))
+def generate_advanced(user, text, analysis):
 
-def update_relation(user):
-    user["relation"]["distance"] += 0.02
-    user["relation"]["distance"] = min(1, user["relation"]["distance"])
+    request_flag = detect_request(text)
+    funny_flag = should_be_funny(user, analysis, text)
+    lead_flag = should_lead(text, analysis)
 
-# =========================
-# ■ 記憶
-# =========================
-def store_memory(user, analysis):
-    user["memory"].append({
-        "topic": analysis.get("topic",""),
-        "emotion": analysis.get("emotion",0),
-        "intent": analysis.get("intent","雑談"),
-        "time": time.time()
-    })
-    user["memory"] = user["memory"][-30:]
-
-# =========================
-# ■ 未回収ネタ
-# =========================
-def add_pending(user, analysis):
-    if analysis.get("intent") in ["相談","報告"]:
-        user["pending_topics"].append({
-            "topic": analysis.get("topic",""),
-            "time": time.time()
-        })
-        user["pending_topics"] = user["pending_topics"][-10:]
-
-def maybe_recall(user):
-    if not user["pending_topics"]:
-        return None
-    if random.random() < 0.3:
-        return random.choice(user["pending_topics"])
-    return None
-
-# =========================
-# ■ フォーカス
-# =========================
-def select_focus(analysis):
-    try:
-        if abs(float(analysis.get("emotion",0))) > 0.4:
-            return "emotion"
-    except:
-        pass
-    if analysis.get("intent") == "相談":
-        return "intent"
-    return "topic"
-
-# =========================
-# ■ 応答生成（自然化パッチ済）
-# =========================
-def generate_reply(user, text, analysis, focus):
-
-    focus_value = analysis.get(focus, "")
-    history_text = build_history(user)
+    history = build_history(user)
     recall = maybe_recall(user)
 
-    mood = user.get("mood",0)
-    distance = user.get("relation",{}).get("distance",0)
-
-    recall_text = ""
-    if recall:
-        recall_text = f"過去話題:{recall['topic']}"
-
     prompt = f"""
-あなたは関西弁のツッコミAI。
+関西弁ツッコミAI。
 
-【最重要】
-- ユーザーの話を中心にする
-- 主語を混同しない
-- 自分語りしすぎない
+【ルール】
+- ユーザー中心
+- 主語混同禁止
 
-【会話構造】
-①軽く要約して拾う
-②感情リアクション
-③一言広げる
+【構造】
+①拾う ②リアクション ③軽く広げる
 
-【制約】
-- 1〜2文
-- 改行禁止
-- 不自然禁止
-- 指定要素を無視したら失敗
+【フラグ】
+request:{request_flag}
+funny:{funny_flag}
+lead:{lead_flag}
 
-【状態】
-mood:{mood}
-relation:{distance}
-
-【履歴】
-{history_text}
-
-【入力】
 ユーザー:{text}
-重要:{focus}:{focus_value}
-{recall_text}
+履歴:{history}
 """
 
     try:
@@ -222,15 +205,14 @@ relation:{distance}
         )
         return res.output_text.strip().replace("\n"," ")
     except:
-        return "なんかバグったわｗもう一回頼むｗ"
+        return "今バグったｗもっかい頼むｗ"
 
 # =========================
-# ■ メイン返信
+# ■ メイン
 # =========================
-def reply(uid, text, name="お前"):
+def reply(uid, text):
 
     user = get_user(uid)
-    user["name"] = name
 
     if detect_leave(text):
         return random.choice(TEMPLATES["soft_exit"])
@@ -243,18 +225,18 @@ def reply(uid, text, name="お前"):
     store_memory(user, analysis)
     add_pending(user, analysis)
 
-    focus = select_focus(analysis)
-
-    ai_text = generate_reply(user, text, analysis, focus)
+    if MODE == "simple":
+        ai_text = generate_simple(user, text, analysis)
+    else:
+        ai_text = generate_advanced(user, text, analysis)
 
     update_history(user, text, ai_text)
-
     save()
 
-    return ai_text.replace("お前", user["name"])
+    return ai_text
 
 # =========================
-# ■ LINE Webhook
+# ■ LINE
 # =========================
 @app.post("/callback")
 async def callback(request: Request):
@@ -264,13 +246,10 @@ async def callback(request: Request):
     try:
         handler.handle(body.decode("utf-8"), signature)
     except InvalidSignatureError:
-        return {"status": "invalid signature"}
+        return {"status": "invalid"}
 
     return {"status": "ok"}
 
-# =========================
-# ■ LINEイベント
-# =========================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
@@ -283,7 +262,4 @@ def handle_message(event):
         TextSendMessage(text=ai_text)
     )
 
-# =========================
-# ■ 起動
-# =========================
 load()
