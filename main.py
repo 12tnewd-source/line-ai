@@ -8,7 +8,7 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = FastAPI()
 
-# ===== API KEY =====
+# ===== API =====
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
@@ -18,13 +18,10 @@ line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKE
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 
 # ===== DATA =====
-DATA_DIR = "user_data"
-os.makedirs(DATA_DIR, exist_ok=True)
-
 users = {}
 
 # =========================
-# ユーザー管理
+# ユーザー
 # =========================
 def get_user(uid):
     if uid not in users:
@@ -88,12 +85,15 @@ def recall_memory(user, topic):
 def decide_role(user, a):
     r = random.random()
 
+    # ツッコミ最優先
     if a["gap"] and r < user["score"]["tsukkomi"]:
         return "tsukkomi"
 
+    # ノリが高い時
     if user["flow"]["momentum"] > 0.6:
         return "flow" if r < 0.7 else "light"
 
+    # 通常
     if r < 0.7:
         return "natural"
     elif r < 0.9:
@@ -105,12 +105,15 @@ def decide_role(user, a):
 # AI
 # =========================
 def ai_talk(prompt, max_tokens):
-    res = client.responses.create(
-        model="gpt-4.1-mini",
-        input=prompt,
-        max_output_tokens=max_tokens
-    )
-    return res.output[0].content[0].text.strip()
+    try:
+        res = client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt,
+            max_output_tokens=max_tokens
+        )
+        return res.output[0].content[0].text.strip()
+    except:
+        return "ちょい調子悪いわｗ"
 
 # =========================
 # 応答生成（完成）
@@ -120,7 +123,7 @@ def generate(user, text, a):
     if len(text.strip()) < 2:
         return "何言うてるか分からんわｗ"
 
-    # 軽い余白
+    # ===== 軽い余白（会話維持型）=====
     if random.random() < 0.08:
         return random.choice([
             "で、結局どうなん？",
@@ -134,12 +137,15 @@ def generate(user, text, a):
 
     rules = ["関西弁"]
 
+    # ===== 状態 =====
     if state == "laugh":
         max_tokens = 40
         rules += ["短く","テンポよく","ノる"]
+
     elif state == "question":
         max_tokens = 70
         rules += ["1つ答える","軽く返す"]
+
     else:
         max_tokens = 50
         rules += ["短く自然に返す"]
@@ -152,8 +158,16 @@ def generate(user, text, a):
             "話飛びすぎやろｗ"
         ])
 
+    # ===== 爆発ボケ（今回の核）=====
+    if role == "boke" and random.random() < 0.25:
+        return random.choice([
+            "いや設定どうなってんねんｗ",
+            "それ現実なん？バグってへん？",
+            "一回整理させてくれ情報量多いｗ"
+        ])
+
     elif role == "boke":
-        rules.append("少しだけズラしてボケる")
+        rules.append("少しだけズラして軽くボケる")
 
     elif role == "flow":
         rules.append("ユーザーのノリを強めに真似る")
@@ -164,7 +178,7 @@ def generate(user, text, a):
     else:
         rules.append("自然に短く返す")
 
-    # 記憶は控えめ
+    # ===== 記憶（控えめ）=====
     if recall and random.random() < 0.15:
         rules.append(f"過去の話題({recall['topic']})を一言だけ触れる")
 
