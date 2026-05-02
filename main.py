@@ -16,8 +16,9 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
+# ★ 安全ガード
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else None
+handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 
 users = {}
 
@@ -57,10 +58,19 @@ def get_user(uid):
 # =========================
 def update_history(user, user_text, ai_text):
     user["history"].append({"user":user_text,"ai":ai_text})
-    user["history"] = user["history"][-3:]
+    user["history"] = user["history"][-10:]
 
 # =========================
-# ■ AI呼び出し（固定）
+# ■ 安全レスポンス取得
+# =========================
+def safe_get_text(res):
+    try:
+        return res.output[0].content[0].text.strip()
+    except:
+        return getattr(res, "output_text", "なんか返ってこんかったわｗ").strip()
+
+# =========================
+# ■ AI呼び出し
 # =========================
 def ai_talk(prompt):
     try:
@@ -69,12 +79,13 @@ def ai_talk(prompt):
             input=prompt,
             max_output_tokens=60
         )
-        return res.output_text.strip()
-    except:
+        return safe_get_text(res)
+    except Exception as e:
+        print("AIエラー:", e)
         return "ちょいバグったわｗ"
 
 # =========================
-# ■ 解析（軽量）
+# ■ 解析
 # =========================
 def analyze(text):
     if len(text) < 10:
@@ -91,7 +102,13 @@ JSONのみ：
             input=prompt,
             max_output_tokens=40
         )
-        return json.loads(res.output_text)
+        raw = safe_get_text(res)
+
+        try:
+            return json.loads(raw)
+        except:
+            return {"emotion":0,"topic":raw[:6],"intent":"雑談"}
+
     except:
         return {"emotion":0,"topic":text[:6],"intent":"雑談"}
 
@@ -125,7 +142,7 @@ def should_be_funny(user, analysis):
     return user["relation"]["distance"] > 0.3
 
 # =========================
-# ■ 応答（改善融合版）
+# ■ 応答（微調整版）
 # =========================
 def generate_advanced(user, text, analysis):
 
@@ -134,14 +151,13 @@ def generate_advanced(user, text, analysis):
 
     parts = []
 
-    # 今の発言を中心
-    parts.append(f"ユーザー:{text}")
+    # ★ 今を最優先
+    parts.append(f"今のユーザー発言:{text}")
+    parts.append("この発言を最優先で理解して反応する")
 
-    # ★ 会話改善ポイント
-    parts.append("ユーザーの発言を理解して自然に反応する")
+    # 会話性
     parts.append("軽く1つだけツッコミか質問を返す")
-    parts.append("会話を続ける意識を持つ")
-    parts.append("今の発言を最優先にする")
+    parts.append("自然に会話を続ける")
 
     # ノリ
     if funny:
@@ -149,40 +165,32 @@ def generate_advanced(user, text, analysis):
     else:
         parts.append("自然に優しく返す")
 
-    # 記憶は弱く補助
+    # 記憶（弱）
     if recall:
-        parts.append(f"少し関係ある過去:{recall['topic']}")
+        parts.append(f"参考の過去:{recall['topic']}")
 
-    # 直前だけ軽く参照
+    # ★ 直前は参考扱いに格下げ
     if user["history"]:
-        parts.append(f"直前:{user['history'][-1]['user']}")
+        parts.append(f"直前の話題（参考程度）:{user['history'][-1]['user']}")
 
-    # 出力制御（人格維持）
+    # 出力制御
     parts.append("関西弁で1〜2文")
     parts.append("短くテンポ良く")
     parts.append("説明しない")
     parts.append("自然な会話")
     parts.append("軽くツッコむ")
-    parts.append("箇条書き禁止")
-    parts.append("番号禁止")
-    parts.append("例: なんやそれｗ どうなったん？")
 
-    prompt = "\n".join(parts)
-
-    return ai_talk(prompt)
+    return ai_talk("\n".join(parts))
 
 # =========================
 # ■ メイン
 # =========================
 def reply(uid, text):
-
     user = get_user(uid)
 
     analysis = analyze(text)
-
     update_mood(user, analysis.get("emotion",0))
     update_relation(user)
-
     store_memory(user, analysis)
 
     ai_text = generate_advanced(user, text, analysis)
@@ -193,14 +201,25 @@ def reply(uid, text):
     return ai_text
 
 # =========================
-# ■ WEB UI
+# ■ WEB UI（チャット化）
 # =========================
 @app.get("/")
 def ui():
-    return HTMLResponse("""
-    <h2>チャットテスト</h2>
+    user = get_user("web_user")
+
+    chat_html = ""
+    for h in user["history"]:
+        chat_html += f"<div><b>あなた:</b> {h['user']}</div>"
+        chat_html += f"<div style='margin-left:20px;color:blue;'><b>AI:</b> {h['ai']}</div><hr>"
+
+    return HTMLResponse(f"""
+    <h2>チャット</h2>
+    <div style="height:300px;overflow:auto;border:1px solid #ccc;padding:10px;">
+        {chat_html}
+    </div>
+
     <form action="/test" method="post">
-        <input name="text" style="width:300px;">
+        <input name="text" style="width:70%;">
         <button type="submit">送信</button>
     </form>
     """)
@@ -213,18 +232,18 @@ async def test(request: Request):
     if not text:
         return HTMLResponse("テキスト入れてやｗ")
 
-    ai_text = reply("web_user", text)
+    reply("web_user", text)
 
-    return HTMLResponse(f"""
-    <p>AI: {ai_text}</p>
-    <a href="/">戻る</a>
-    """)
+    return HTMLResponse('<meta http-equiv="refresh" content="0; url=/" />')
 
 # =========================
 # ■ LINE
 # =========================
 @app.post("/callback")
 async def callback(request: Request):
+    if not handler:
+        return {"status": "LINE未設定"}
+
     body = await request.body()
     signature = request.headers.get("X-Line-Signature")
 
@@ -235,16 +254,20 @@ async def callback(request: Request):
 
     return {"status": "ok"}
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_id = event.source.user_id
-    text = event.message.text
+if handler:
+    @handler.add(MessageEvent, message=TextMessage)
+    def handle_message(event):
+        if not line_bot_api:
+            return
 
-    ai_text = reply(user_id, text)
+        user_id = event.source.user_id
+        text = event.message.text
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=ai_text)
-    )
+        ai_text = reply(user_id, text)
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=ai_text)
+        )
 
 load()
