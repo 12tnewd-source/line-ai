@@ -1,4 +1,4 @@
-import os, random, json, time
+import os, random, json
 from fastapi import FastAPI, Request
 from openai import OpenAI
 
@@ -17,9 +17,6 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-
-# ===== MODE切替 =====
-MODE = "advanced"  # "simple" or "advanced"
 
 users = {}
 
@@ -47,67 +44,58 @@ def load():
 def get_user(uid):
     if uid not in users:
         users[uid] = {
-            "name":"お前",
             "memory":[],
             "history":[],
             "mood":0.0,
-            "relation":{"distance":0.0},
-            "pending_topics":[]
+            "relation":{"distance":0.0}
         }
     return users[uid]
 
 # =========================
-# ■ テンプレ
-# =========================
-TEMPLATES = {
-    "soft_exit":[
-        "おおｗ全然ええでｗまた来いｗ",
-        "まぁ今日はここまでやなｗ"
-    ]
-}
-
-def detect_leave(text):
-    return len(text.strip()) < 3
-
-# =========================
 # ■ 履歴
 # =========================
-def build_history(user):
-    return "\n".join([f"ユーザー:{h['user']}\nAI:{h['ai']}" for h in user["history"]])
-
 def update_history(user, user_text, ai_text):
     user["history"].append({"user":user_text,"ai":ai_text})
-    user["history"] = user["history"][-5:]
+    user["history"] = user["history"][-3:]
 
 # =========================
-# ■ 解析
+# ■ AI呼び出し（固定）
 # =========================
-def analyze(text):
-    if len(text) < 10:
-        return {"emotion":0,"topic":text,"intent":"雑談"}
-
-    prompt = f"""
-必ずJSONのみで出力：
-{{
-"emotion": 数値(-1〜1),
-"topic": "単語",
-"intent": "雑談/相談/報告/質問"
-}}
-文: {text}
-"""
+def ai_talk(prompt):
     try:
         res = client.responses.create(
             model="gpt-4.1-mini",
             input=prompt,
             max_output_tokens=60
         )
-        data = json.loads(res.output_text)
-        return data
+        return res.output_text.strip()
+    except:
+        return "ちょいバグったわｗ"
+
+# =========================
+# ■ 解析（軽量）
+# =========================
+def analyze(text):
+    if len(text) < 10:
+        return {"emotion":0,"topic":text,"intent":"雑談"}
+
+    prompt = f"""
+JSONのみ：
+{{"emotion":-1〜1,"topic":"単語","intent":"雑談/相談/質問"}}
+文:{text}
+"""
+    try:
+        res = client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt,
+            max_output_tokens=40
+        )
+        return json.loads(res.output_text)
     except:
         return {"emotion":0,"topic":text[:6],"intent":"雑談"}
 
 # =========================
-# ■ 状態
+# ■ 状態更新
 # =========================
 def update_mood(user, emotion):
     user["mood"] = max(-1, min(1, user["mood"] + float(emotion)*0.3))
@@ -120,92 +108,56 @@ def update_relation(user):
 # =========================
 def store_memory(user, analysis):
     user["memory"].append(analysis)
-    user["memory"] = user["memory"][-20:]
-
-def add_pending(user, analysis):
-    if analysis.get("intent") in ["相談","報告"]:
-        user["pending_topics"].append(analysis)
-        user["pending_topics"] = user["pending_topics"][-10:]
+    user["memory"] = user["memory"][-10:]
 
 def maybe_recall(user):
-    if user["pending_topics"] and random.random() < 0.3:
-        return random.choice(user["pending_topics"])
+    if user["memory"] and random.random() < 0.3:
+        return random.choice(user["memory"])
     return None
 
 # =========================
-# ■ フラグ（advanced用）
+# ■ ノリ制御
 # =========================
-def detect_request(text):
-    return any(k in text for k in ["して","やって","言って","教えて","みて"])
-
-def should_be_funny(user, analysis, text):
-    if detect_request(text):
-        return True
-    if analysis.get("intent") == "相談":
+def should_be_funny(user, analysis):
+    if analysis["intent"] == "相談":
         return False
-    return user["relation"]["distance"] > 0.4
-
-def should_lead(text, analysis):
-    return len(text) < 5 or analysis.get("intent") == "雑談"
+    return user["relation"]["distance"] > 0.3
 
 # =========================
-# ■ 応答（simple）
-# =========================
-def generate_simple(user, text, analysis):
-    prompt = f"""
-関西弁で自然に返す。短く1〜2文。
-ユーザー:{text}
-"""
-    try:
-        res = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-            max_output_tokens=80
-        )
-        return res.output_text.strip()
-    except:
-        return "ちょいバグったわｗ"
-
-# =========================
-# ■ 応答（advanced）
+# ■ 応答（自然会話版）
 # =========================
 def generate_advanced(user, text, analysis):
 
-    request_flag = detect_request(text)
-    funny_flag = should_be_funny(user, analysis, text)
-    lead_flag = should_lead(text, analysis)
-
-    history = build_history(user)
+    funny = should_be_funny(user, analysis)
     recall = maybe_recall(user)
 
-    prompt = f"""
-関西弁ツッコミAI。
+    parts = []
 
-【ルール】
-- ユーザー中心
-- 主語混同禁止
+    parts.append(f"ユーザー:{text}")
 
-【構造】
-①拾う ②リアクション ③軽く広げる
+    if funny:
+        parts.append("ノリよく軽くボケてツッコむ")
+    else:
+        parts.append("自然に優しく返す")
 
-【フラグ】
-request:{request_flag}
-funny:{funny_flag}
-lead:{lead_flag}
+    if recall:
+        parts.append(f"前の話:{recall['topic']}")
 
-ユーザー:{text}
-履歴:{history}
-"""
+    if user["history"]:
+        parts.append(f"直前:{user['history'][-1]['user']}")
 
-    try:
-        res = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-            max_output_tokens=90
-        )
-        return res.output_text.strip().replace("\n"," ")
-    except:
-        return "今バグったｗもっかい頼むｗ"
+    # ▼ここが最重要
+    parts.append("関西弁で一言か二言")
+    parts.append("説明するな")
+    parts.append("会話っぽく")
+    parts.append("軽くツッコめ")
+    parts.append("箇条書き禁止")
+    parts.append("番号使うな")
+    parts.append("例: なんやそれｗ / マジかいなｗ")
+
+    prompt = "\n".join(parts)
+
+    return ai_talk(prompt)
 
 # =========================
 # ■ メイン
@@ -214,21 +166,14 @@ def reply(uid, text):
 
     user = get_user(uid)
 
-    if detect_leave(text):
-        return random.choice(TEMPLATES["soft_exit"])
-
     analysis = analyze(text)
 
     update_mood(user, analysis.get("emotion",0))
     update_relation(user)
 
     store_memory(user, analysis)
-    add_pending(user, analysis)
 
-    if MODE == "simple":
-        ai_text = generate_simple(user, text, analysis)
-    else:
-        ai_text = generate_advanced(user, text, analysis)
+    ai_text = generate_advanced(user, text, analysis)
 
     update_history(user, text, ai_text)
     save()
