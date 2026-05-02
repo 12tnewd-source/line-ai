@@ -47,7 +47,7 @@ def get_user(uid):
             "history":[],
             "mood":0.0,
             "relation":{"distance":0.0},
-            "style":{"talk_speed":0.5,"density":0.5,"playfulness":0.5}
+            "style":{"playfulness":0.5}
         }
     return users[uid]
 
@@ -86,41 +86,30 @@ def ai_talk(prompt):
 # 軽量解析
 # =========================
 def analyze(text):
-    if len(text) < 15:
-        return {
-            "emotion":0,
-            "topic":text[:8],
-            "intent":"雑談",
-            "energy":0.5,
-            "serious":0.3
-        }
+    base = {
+        "emotion":0,
+        "topic":text[:8],
+        "intent":"雑談",
+        "energy":0.5,
+        "serious":0.5
+    }
 
-    prompt = f"""
-JSONのみ：
-{{
-"emotion":-1〜1,
-"topic":"単語",
-"intent":"雑談/相談/質問",
-"energy":0〜1,
-"serious":0〜1
-}}
-文:{text}
-"""
-    try:
-        res = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-            max_output_tokens=60
-        )
-        return json.loads(safe_get_text(res))
-    except:
-        return {
-            "emotion":0,
-            "topic":text[:8],
-            "intent":"雑談",
-            "energy":0.5,
-            "serious":0.5
-        }
+    # 簡易補強（軽量＆安定）
+    if "？" in text or "?" in text:
+        base["intent"] = "質問"
+
+    if any(k in text for k in ["悩", "つらい", "しんどい", "どうしたら"]):
+        base["intent"] = "相談"
+
+    if "！" in text or "w" in text:
+        base["energy"] += 0.2
+
+    if any(k in text for k in ["なんで", "意味わからん", "急に"]):
+        base["gap"] = True
+    else:
+        base["gap"] = False
+
+    return base
 
 # =========================
 # 状態更新
@@ -138,120 +127,99 @@ def update_relation(user, intent):
 # =========================
 # 記憶
 # =========================
-def store_memory(user, analysis):
-    mem = {
+def store_memory(user, text, analysis):
+    user["memory"].append({
         "topic":analysis.get("topic",""),
+        "detail":text,
         "emotion":analysis.get("emotion",0)
-    }
-    user["memory"].append(mem)
+    })
     user["memory"] = user["memory"][-20:]
 
-def recall_memory(user, current_topic):
-    scored = []
-    for m in user["memory"]:
-        score = 0
-        if current_topic and current_topic in m.get("topic",""):
-            score += 2
-        score += 0.3 + abs(m.get("emotion",0))
-        scored.append((score, m))
-
-    scored.sort(reverse=True, key=lambda x: x[0])
-    if scored and scored[0][0] > 1.2:
-        return scored[0][1]
+def recall_memory(user, topic):
+    for m in reversed(user["memory"]):
+        if topic and topic in m["topic"]:
+            return m
     return None
 
 # =========================
-# 補助
+# 役割
 # =========================
-def detect_gap(text):
-    weird_words = ["なんで", "急に", "意味わからん", "AI", "機械"]
-    return any(w in text for w in weird_words)
+def decide_role(analysis, user):
+    base = random.random()
 
-def is_question(text):
-    return ("？" in text) or ("?" in text) or ("なんで" in text) or ("なに" in text)
-
-def is_gibberish(text):
-    if len(text.strip()) < 2:
-        return True
-    if all(c in "あいうえおアイウエオwｗ笑" for c in text):
-        return True
-    return False
-
-def decide_mode(user, analysis):
     if analysis["intent"] == "相談":
-        return "care"
-    if user["relation"]["distance"] > 0.4:
-        return "fun"
-    return "normal"
+        return "listener"
+
+    if user["relation"]["distance"] < 0.2:
+        return "react"
+
+    if analysis["energy"] > 0.6:
+        if base < 0.4:
+            return "react"
+        elif base < 0.75:
+            return "tsukkomi"
+        else:
+            return "topic_shift"
+
+    return "react"
 
 # =========================
-# 応答生成（最適融合版）
+# ツッコミ判定
+# =========================
+def should_tsukkomi(analysis, user):
+    if analysis["intent"] == "相談":
+        return False
+    if user["relation"]["distance"] < 0.3:
+        return False
+    if not analysis.get("gap"):
+        return False
+    if analysis.get("serious",0) > 0.6:
+        return False
+    return random.random() < 0.6
+
+# =========================
+# 応答生成
 # =========================
 def generate(user, text, analysis):
 
-    # --- 意味不明は即返し ---
-    if is_gibberish(text):
+    # 意味不明対策
+    if len(text.strip()) < 2:
+        return "ちょい何言うてるかわからんわｗ"
+
+    role = decide_role(analysis, user)
+    recall = recall_memory(user, analysis.get("topic"))
+
+    # ツッコミ（成立時のみ）
+    if should_tsukkomi(analysis, user):
         return random.choice([
-            "意味わからんでｗ日本語で頼むわｗ",
-            "どうしたん？指バグった？ｗ",
-            "今の解読班呼ぶ？ｗ"
+            "いやなんでやねんｗ",
+            "急すぎるやろｗ",
+            "どういう流れやねんそれｗ"
         ])
 
-    mode = decide_mode(user, analysis)
-    recall = recall_memory(user, analysis.get("topic"))
-    style = user["style"]
+    # ルール（性格ベース）
+    rules = ["関西弁"]
 
-    parts = []
-    parts.append(f"ユーザー発言:{text}")
+    if analysis["energy"] > 0.5:
+        rules.append("テンポよく")
 
-    # ===== 質問（丁寧回避＋逃げ防止）=====
-    if is_question(text):
-        q = random.random()
-        if q < 0.6:
-            parts.append("一言で答えてから軽く崩す")
-        elif q < 0.85:
-            parts.append("一言答えてすぐ軽くツッコむ")
-        else:
-            parts.append("少しズラして答えるが会話は成立させる")
+    if user["relation"]["distance"] > 0.4:
+        rules.append("少し砕ける")
 
-    # ===== リアクション（強制しない）=====
-    action = random.random()
+    if user["style"]["playfulness"] > 0.6:
+        if random.random() < user["style"]["playfulness"]:
+            rules.append("ちょい雑に")
 
-    if detect_gap(text) and action < 0.7:
-        parts.append("違和感に一言ツッコんでから少しだけ広げる")
-    elif action < 0.45:
-        parts.append("気になった部分があれば軽く触れる")
-    else:
-        parts.append("そのまま自然に返す")
+    # 会話生成
+    prompt = f"""
+ユーザー:{text}
+役割:{role}
+ルール:{",".join(rules)}
 
-    # ===== ボケ（控えめ）=====
-    if random.random() < 0.25:
-        parts.append(random.choice([
-            "少し大げさにする",
-            "一瞬だけ変な例えを入れる",
-            "ありえない前提を軽く出す"
-        ]))
+自然な会話を1〜2文で返せ
+"""
 
-    # ===== 記憶 =====
-    if recall and user["relation"]["distance"] > 0.4:
-        parts.append(f"前の話題を少しだけ混ぜる:{recall['topic']}")
-
-    # ===== 感情 =====
-    if analysis.get("emotion",0) < -0.3:
-        parts.append("軽く共感する")
-
-    # ===== トーン =====
-    if user["mood"] > 0.5:
-        parts.append("少しテンポよく")
-    elif user["mood"] < -0.5:
-        parts.append("落ち着いて返す")
-
-    # ===== 出力 =====
-    parts.append("関西弁で1〜2文")
-    parts.append("短く")
-    parts.append("説明しない")
-
-    return ai_talk("\n".join(parts))
+    return ai_talk(prompt)
 
 # =========================
 # メイン
@@ -263,7 +231,7 @@ def reply(uid, text):
 
     update_mood(user, analysis.get("emotion",0))
     update_relation(user, analysis.get("intent","雑談"))
-    store_memory(user, analysis)
+    store_memory(user, text, analysis)
 
     ai_text = generate(user, text, analysis)
 
