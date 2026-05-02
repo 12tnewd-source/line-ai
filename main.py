@@ -17,22 +17,20 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else None
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 
-# ===== 永続化ディレクトリ =====
 DATA_DIR = "user_data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 users = {}
 
 # =========================
-# ユーザー保存/読込
+# 保存 / 読込
 # =========================
 def save_user(uid, user):
     try:
-        path = os.path.join(DATA_DIR, f"{uid}.json")
-        with open(path, "w", encoding="utf-8") as f:
+        with open(os.path.join(DATA_DIR, f"{uid}.json"), "w", encoding="utf-8") as f:
             json.dump(user, f, ensure_ascii=False)
-    except Exception as e:
-        print("保存エラー:", e)
+    except:
+        pass
 
 def load_user(uid):
     path = os.path.join(DATA_DIR, f"{uid}.json")
@@ -50,7 +48,6 @@ def load_user(uid):
 def get_user(uid):
     if uid not in users:
         loaded = load_user(uid)
-
         if loaded:
             users[uid] = loaded
         else:
@@ -63,27 +60,29 @@ def get_user(uid):
                 "score":{
                     "boke":0.5,
                     "tsukkomi":0.5,
-                    "sensitivity":0.5
-                }
+                    "sensitivity":0.5,
+                    "memory_preference":0.5
+                },
+                "flow":{"momentum":0.0}
             }
     return users[uid]
 
 # =========================
 # 履歴
 # =========================
-def update_history(user, user_text, ai_text):
-    user["history"].append({"user":user_text,"ai":ai_text})
+def update_history(user, u, a):
+    user["history"].append({"user":u,"ai":a})
     user["history"] = user["history"][-10:]
 
 # =========================
-# スコア更新（反応ベース）
+# スコア
 # =========================
 def update_score(user, text):
     s = user["score"]
 
     if "w" in text or "笑" in text:
         s["boke"] += 0.05
-        s["sensitivity"] += 0.03
+        user["flow"]["momentum"] += 0.2
 
     if "なんで" in text or "いや" in text:
         s["tsukkomi"] += 0.03
@@ -91,18 +90,17 @@ def update_score(user, text):
     for k in s:
         s[k] = min(1.0, s[k])
 
+    user["flow"]["momentum"] = min(1.0, user["flow"]["momentum"])
+
 # =========================
-# AI安全取得
+# AI
 # =========================
 def safe_get_text(res):
     try:
         return res.output[0].content[0].text.strip()
     except:
-        return getattr(res, "output_text", "なんかバグったわｗ").strip()
+        return getattr(res, "output_text", "").strip()
 
-# =========================
-# AI呼び出し
-# =========================
 def ai_talk(prompt):
     try:
         res = client.responses.create(
@@ -111,159 +109,131 @@ def ai_talk(prompt):
             max_output_tokens=80
         )
         return safe_get_text(res)
-    except Exception as e:
-        print("AIエラー:", e)
+    except:
         return "ちょい調子悪いわｗ"
 
 # =========================
-# 軽量解析
+# 解析（軽く強化）
 # =========================
 def analyze(text):
-    base = {
-        "emotion":0,
-        "topic":text[:8],
-        "intent":"雑談",
-        "energy":0.5,
-        "serious":0.5,
-        "gap":False
+    return {
+        "intent":"質問" if "?" in text or "？" in text else "雑談",
+        "energy":0.7 if "w" in text else 0.5,
+        "gap": any(k in text for k in ["なんで","意味わからん","急に"]),
+        "topic": text[:8]
     }
 
-    if "？" in text or "?" in text:
-        base["intent"] = "質問"
-
-    if any(k in text for k in ["悩", "つらい", "しんどい", "どうしたら"]):
-        base["intent"] = "相談"
-
-    if "！" in text or "w" in text:
-        base["energy"] += 0.2
-
-    if any(k in text for k in ["なんで", "意味わからん", "急に"]):
-        base["gap"] = True
-
-    return base
-
 # =========================
-# 状態更新
+# 記憶
 # =========================
-def update_mood(user, emotion):
-    user["mood"] = max(-1, min(1, user["mood"] + float(emotion)*0.3))
-
-def update_relation(user, intent):
-    if intent == "相談":
-        user["relation"]["distance"] += 0.05
-    else:
-        user["relation"]["distance"] += 0.01
-    user["relation"]["distance"] = min(1, user["relation"]["distance"])
-
-# =========================
-# 記憶（タグ追加）
-# =========================
-def store_memory(user, text, analysis):
-
-    tag = "normal"
-    if analysis["intent"] == "質問":
-        tag = "question"
-    elif analysis["gap"]:
-        tag = "weird"
-    elif analysis["emotion"] < -0.3:
-        tag = "negative"
-    elif analysis["emotion"] > 0.4:
-        tag = "positive"
-
+def store_memory(user, text, a):
     user["memory"].append({
-        "topic":analysis.get("topic",""),
-        "detail":text,
-        "emotion":analysis.get("emotion",0),
-        "tag":tag
+        "topic":a["topic"],
+        "text":text
     })
-
-    user["memory"] = user["memory"][-30:]
+    user["memory"] = user["memory"][-20:]
 
 def recall_memory(user, topic):
-    for m in reversed(user["memory"]):
-        if topic and topic in m["topic"]:
-            return m
-    return None
+    if not user["memory"]:
+        return None
+
+    # 軽く関連優先（でも遊び残す）
+    candidates = [m for m in user["memory"] if topic in m["topic"]]
+
+    if candidates and random.random() < 0.7:
+        return random.choice(candidates)
+
+    return random.choice(user["memory"])
 
 # =========================
-# 役割
+# モード
 # =========================
-def decide_role(analysis, user):
-    base = random.random()
+def decide_mode(user, a):
+    r = random.random()
 
-    if analysis["intent"] == "相談":
-        return "listener"
+    if user["flow"]["momentum"] > 0.6:
+        return "flow" if r < 0.6 else "boke"
 
-    if user["relation"]["distance"] < 0.2:
-        return "react"
-
-    if analysis["energy"] > 0.6:
-        if base < 0.4:
-            return "react"
-        elif base < 0.75:
-            return "tsukkomi"
-        else:
-            return "topic_shift"
-
-    return "react"
+    if r < 0.6:
+        return "stable"
+    elif r < 0.85:
+        return "light"
+    else:
+        return "free"
 
 # =========================
-# ツッコミ判定
+# 記憶使用率
 # =========================
-def should_tsukkomi(analysis, user):
-    if analysis["intent"] == "相談":
-        return False
-    if user["relation"]["distance"] < 0.3:
-        return False
-    if not analysis.get("gap"):
-        return False
-    return random.random() < user["score"].get("tsukkomi",0.5)
+def decide_memory_mix(user):
+    base = 0.7
+
+    if user["relation"]["distance"] > 0.5:
+        base -= 0.2
+
+    if user["flow"]["momentum"] > 0.6:
+        base -= 0.1
+
+    base -= user["score"]["memory_preference"] * 0.2
+
+    base += random.uniform(-0.1,0.1)
+
+    return max(0.3, min(0.9, base))
 
 # =========================
 # 応答生成
 # =========================
-def generate(user, text, analysis):
+def generate(user, text, a):
 
     if len(text.strip()) < 2:
-        return "ちょい何言うてるかわからんわｗ"
+        return "何言うてるかちょい分からんわｗ"
 
-    role = decide_role(analysis, user)
-    recall = recall_memory(user, analysis.get("topic"))
-    score = user["score"]
-
-    # ツッコミ（繋ぐ形）
-    if should_tsukkomi(analysis, user):
-        return random.choice([
-            "いやなんでやねんｗで、どういうことなん？",
-            "急すぎるやろｗ何があったんｗ",
-            "流れバグってるやんｗもうちょい教えてや"
-        ])
+    mode = decide_mode(user, a)
+    recall = recall_memory(user, a["topic"])
+    ratio = decide_memory_mix(user)
 
     rules = ["関西弁"]
 
-    if analysis["energy"] > 0.5:
-        rules.append("テンポよく")
+    # 軸
+    rules.append("ユーザー発言の一つの要素を軸にする")
 
-    if user["relation"]["distance"] > 0.4:
-        rules.append("少し砕ける")
+    # モード
+    if mode == "stable":
+        rules.append("軸から外れない")
+    elif mode in ["light","flow"]:
+        rules.append("軸を保ちながら関連する範囲で広げる")
+        rules.append("広げた場合は元に戻る")
+    elif mode == "free":
+        rules.append("少し自由に発想してよいが違和感は出さない")
 
-    # ボケ頻度（ユーザー依存）
-    if random.random() < score.get("boke",0.5):
-        rules.append("少しだけボケる")
+    # 新規要素
+    rules.append("新しい要素はユーザー発言か記憶と関連させる")
 
-    # ネガティブ対応（分岐）
-    if recall and recall["tag"] == "negative":
-        if score.get("sensitivity",0.5) > 0.6:
-            rules.append("少し寄り添う")
-        else:
-            rules.append("軽く流す")
+    # 記憶
+    if recall and random.random() > ratio:
+        rules.append(f"過去の話題『{recall['topic']}』を軽く絡める")
+
+    # 笑い
+    if random.random() < user["score"]["boke"]:
+        rules.append("軸の要素を少しズラして面白くする")
+
+    # ツッコミ
+    if a["gap"] and random.random() < user["score"]["tsukkomi"]:
+        return random.choice([
+            "なんでやねんｗでどういうこと？",
+            "急すぎるやろｗ説明くれｗ"
+        ])
+
+    # 流れ
+    if user["flow"]["momentum"] > 0.5:
+        rules.append("流れを優先して軽く乗る")
+
+    rules.append("1〜2文で自然に返す")
 
     prompt = f"""
 ユーザー:{text}
-役割:{role}
 ルール:{",".join(rules)}
 
-自然な会話を1〜2文で返せ
+自然な会話を返せ
 """
 
     return ai_talk(prompt)
@@ -274,51 +244,42 @@ def generate(user, text, analysis):
 def reply(uid, text):
     user = get_user(uid)
 
-    analysis = analyze(text)
+    a = analyze(text)
 
-    update_score(user, text)  # ←追加（超重要）
-    update_mood(user, analysis.get("emotion",0))
-    update_relation(user, analysis.get("intent","雑談"))
-    store_memory(user, text, analysis)
+    update_score(user, text)
+    store_memory(user, text, a)
 
-    ai_text = generate(user, text, analysis)
+    ai = generate(user, text, a)
 
-    update_history(user, text, ai_text)
-    save_user(uid, user)  # ←ユーザー別保存
+    update_history(user, text, ai)
+    save_user(uid, user)
 
-    return ai_text
+    return ai
 
 # =========================
-# WEB UI
+# WEB
 # =========================
 @app.get("/")
 def ui():
     user = get_user("web_user")
 
-    chat_html = ""
+    chat = ""
     for h in user["history"]:
-        chat_html += f"<div><b>あなた:</b> {h['user']}</div>"
-        chat_html += f"<div style='margin-left:20px;color:blue;'><b>AI:</b> {h['ai']}</div><hr>"
+        chat += f"<div><b>あなた:</b>{h['user']}</div>"
+        chat += f"<div style='margin-left:20px;color:blue;'><b>AI:</b>{h['ai']}</div><hr>"
 
     return HTMLResponse(f"""
     <h2>チャット</h2>
-    <div style="height:300px;overflow:auto;border:1px solid #ccc;padding:10px;">
-        {chat_html}
-    </div>
+    <div style="height:300px;overflow:auto;border:1px solid #ccc;">{chat}</div>
     <form action="/test" method="post">
-        <input name="text" style="width:70%;">
-        <button type="submit">送信</button>
+    <input name="text"><button>送信</button>
     </form>
     """)
 
 @app.post("/test")
 async def test(request: Request):
     form = await request.form()
-    text = form.get("text")
-    if not text:
-        return HTMLResponse("なんか入れろやｗ")
-
-    reply("web_user", text)
+    reply("web_user", form.get("text"))
     return HTMLResponse('<meta http-equiv="refresh" content="0; url=/" />')
 
 # =========================
@@ -327,30 +288,20 @@ async def test(request: Request):
 @app.post("/callback")
 async def callback(request: Request):
     if not handler:
-        return {"status": "LINE未設定"}
+        return {"status":"no line"}
 
     body = await request.body()
     signature = request.headers.get("X-Line-Signature")
 
     try:
         handler.handle(body.decode("utf-8"), signature)
-    except InvalidSignatureError:
-        return {"status": "invalid"}
+    except:
+        return {"status":"error"}
 
-    return {"status": "ok"}
+    return {"status":"ok"}
 
 if handler:
     @handler.add(MessageEvent, message=TextMessage)
-    def handle_message(event):
-        if not line_bot_api:
-            return
-
-        user_id = event.source.user_id
-        text = event.message.text
-
-        ai_text = reply(user_id, text)
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=ai_text)
-        )
+    def handle(event):
+        ai = reply(event.source.user_id, event.message.text)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=ai))
