@@ -1,5 +1,6 @@
 import os, random, json
 from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from openai import OpenAI
 
 # LINE SDK
@@ -124,7 +125,7 @@ def should_be_funny(user, analysis):
     return user["relation"]["distance"] > 0.3
 
 # =========================
-# ■ 応答（修正版）
+# ■ 応答（改善融合版）
 # =========================
 def generate_advanced(user, text, analysis):
 
@@ -136,10 +137,11 @@ def generate_advanced(user, text, analysis):
     # 今の発言を中心
     parts.append(f"ユーザー:{text}")
 
-    # 会話ルール（ここが改善ポイント）
-    parts.append("ユーザーの発言をちゃんと理解して反応する")
-    parts.append("1つだけ軽く質問かツッコミを返す")
+    # ★ 会話改善ポイント
+    parts.append("ユーザーの発言を理解して自然に反応する")
+    parts.append("軽く1つだけツッコミか質問を返す")
     parts.append("会話を続ける意識を持つ")
+    parts.append("今の発言を最優先にする")
 
     # ノリ
     if funny:
@@ -147,19 +149,20 @@ def generate_advanced(user, text, analysis):
     else:
         parts.append("自然に優しく返す")
 
-    # 記憶は軽く
+    # 記憶は弱く補助
     if recall:
-        parts.append(f"過去に少し関係ある話題:{recall['topic']}")
+        parts.append(f"少し関係ある過去:{recall['topic']}")
 
-    # 直前の流れ
+    # 直前だけ軽く参照
     if user["history"]:
         parts.append(f"直前:{user['history'][-1]['user']}")
 
-    # 出力制御
+    # 出力制御（人格維持）
     parts.append("関西弁で1〜2文")
     parts.append("短くテンポ良く")
     parts.append("説明しない")
-    parts.append("自然な会話にする")
+    parts.append("自然な会話")
+    parts.append("軽くツッコむ")
     parts.append("箇条書き禁止")
     parts.append("番号禁止")
     parts.append("例: なんやそれｗ どうなったん？")
@@ -188,6 +191,34 @@ def reply(uid, text):
     save()
 
     return ai_text
+
+# =========================
+# ■ WEB UI
+# =========================
+@app.get("/")
+def ui():
+    return HTMLResponse("""
+    <h2>チャットテスト</h2>
+    <form action="/test" method="post">
+        <input name="text" style="width:300px;">
+        <button type="submit">送信</button>
+    </form>
+    """)
+
+@app.post("/test")
+async def test(request: Request):
+    form = await request.form()
+    text = form.get("text")
+
+    if not text:
+        return HTMLResponse("テキスト入れてやｗ")
+
+    ai_text = reply("web_user", text)
+
+    return HTMLResponse(f"""
+    <p>AI: {ai_text}</p>
+    <a href="/">戻る</a>
+    """)
 
 # =========================
 # ■ LINE
