@@ -17,7 +17,6 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else None
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 
-# ===== DATA =====
 users = {}
 
 # =========================
@@ -29,7 +28,7 @@ def get_user(uid):
             "memory":[],
             "history":[],
             "relation":{"distance":0.0},
-            "score":{"boke":0.4,"tsukkomi":0.6},
+            "score":{"boke":0.5,"tsukkomi":0.6},
             "flow":{"momentum":0.0}
         }
     return users[uid]
@@ -58,7 +57,7 @@ def update_score(user, text):
         user["score"]["boke"] += 0.05
         user["flow"]["momentum"] += 0.2
     else:
-        user["flow"]["momentum"] *= 0.8
+        user["flow"]["momentum"] *= 0.85
 
     if "なんで" in text or "いや" in text:
         user["score"]["tsukkomi"] += 0.03
@@ -72,29 +71,30 @@ def update_score(user, text):
 # =========================
 def store_memory(user, text, a):
     user["memory"].append({"topic":a["topic"],"text":text})
-    user["memory"] = user["memory"][-15:]
+    user["memory"] = user["memory"][-20:]
 
 def recall_memory(user, topic):
     if not user["memory"]:
         return None
+    if random.random() < 0.5:
+        related = [m for m in user["memory"] if topic in m.get("topic","")]
+        if related:
+            return random.choice(related)
     return random.choice(user["memory"])
 
 # =========================
-# 役割決定（最重要）
+# 役割
 # =========================
 def decide_role(user, a):
     r = random.random()
 
-    # ツッコミ最優先
     if a["gap"] and r < user["score"]["tsukkomi"]:
         return "tsukkomi"
 
-    # ノリが高い時
     if user["flow"]["momentum"] > 0.6:
-        return "flow" if r < 0.7 else "light"
+        return "flow" if r < 0.65 else "light"
 
-    # 通常
-    if r < 0.7:
+    if r < 0.65:
         return "natural"
     elif r < 0.9:
         return "light"
@@ -123,8 +123,8 @@ def generate(user, text, a):
     if len(text.strip()) < 2:
         return "何言うてるか分からんわｗ"
 
-    # ===== 軽い余白（会話維持型）=====
-    if random.random() < 0.08:
+    # ===== 軽い余白 =====
+    if random.random() < 0.06:
         return random.choice([
             "で、結局どうなん？",
             "ほんでどうなったん？",
@@ -141,16 +141,14 @@ def generate(user, text, a):
     if state == "laugh":
         max_tokens = 40
         rules += ["短く","テンポよく","ノる"]
-
     elif state == "question":
         max_tokens = 70
         rules += ["1つ答える","軽く返す"]
-
     else:
-        max_tokens = 50
-        rules += ["短く自然に返す"]
+        max_tokens = 55
+        rules += ["1文目で反応","自然に続ける"]
 
-    # ===== 役割固定 =====
+    # ===== ツッコミ =====
     if role == "tsukkomi":
         return random.choice([
             "なんでやねんｗ",
@@ -158,16 +156,17 @@ def generate(user, text, a):
             "話飛びすぎやろｗ"
         ])
 
-    # ===== 爆発ボケ（今回の核）=====
+    # ===== 爆発ボケ =====
     if role == "boke" and random.random() < 0.25:
         return random.choice([
             "いや設定どうなってんねんｗ",
             "それ現実なん？バグってへん？",
-            "一回整理させてくれ情報量多いｗ"
+            "情報量多すぎて脳バグるわｗ"
         ])
 
-    elif role == "boke":
-        rules.append("少しだけズラして軽くボケる")
+    # ===== 軽ボケ =====
+    if role == "boke":
+        rules.append("少しズラして軽くボケる")
 
     elif role == "flow":
         rules.append("ユーザーのノリを強めに真似る")
@@ -178,9 +177,13 @@ def generate(user, text, a):
     else:
         rules.append("自然に短く返す")
 
-    # ===== 記憶（控えめ）=====
-    if recall and random.random() < 0.15:
-        rules.append(f"過去の話題({recall['topic']})を一言だけ触れる")
+    # ===== ★広げ（神調整復活）=====
+    if role in ["natural","light","flow"] and random.random() < 0.45:
+        rules.append("ユーザーの話を1つだけ自然に広げる（脱線しない）")
+
+    # ===== 記憶 =====
+    if recall and random.random() < 0.2:
+        rules.append(f"過去の話題({recall['topic']})を軽く絡める")
 
     rules.append("ダラダラしない")
 
