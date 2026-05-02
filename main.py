@@ -54,13 +54,10 @@ def get_user(uid):
             users[uid] = {
                 "memory":[],
                 "history":[],
-                "mood":0.0,
                 "relation":{"distance":0.0},
-                "style":{"playfulness":0.5},
                 "score":{
                     "boke":0.5,
                     "tsukkomi":0.5,
-                    "sensitivity":0.5,
                     "memory_preference":0.5
                 },
                 "flow":{"momentum":0.0}
@@ -83,6 +80,8 @@ def update_score(user, text):
     if "w" in text or "笑" in text:
         s["boke"] += 0.05
         user["flow"]["momentum"] += 0.2
+    else:
+        user["flow"]["momentum"] *= 0.8
 
     if "なんで" in text or "いや" in text:
         s["tsukkomi"] += 0.03
@@ -99,7 +98,7 @@ def safe_get_text(res):
     try:
         return res.output[0].content[0].text.strip()
     except:
-        return getattr(res, "output_text", "").strip()
+        return getattr(res, "output_text", "なんかバグったわｗ").strip()
 
 def ai_talk(prompt):
     try:
@@ -113,14 +112,14 @@ def ai_talk(prompt):
         return "ちょい調子悪いわｗ"
 
 # =========================
-# 解析（軽く強化）
+# 解析
 # =========================
 def analyze(text):
     return {
         "intent":"質問" if "?" in text or "？" in text else "雑談",
-        "energy":0.7 if "w" in text else 0.5,
         "gap": any(k in text for k in ["なんで","意味わからん","急に"]),
-        "topic": text[:8]
+        "topic": text[:8],
+        "raw": text
     }
 
 # =========================
@@ -137,18 +136,17 @@ def recall_memory(user, topic):
     if not user["memory"]:
         return None
 
-    # 軽く関連優先（でも遊び残す）
-    candidates = [m for m in user["memory"] if topic in m["topic"]]
+    related = [m for m in user["memory"] if topic in m["topic"]]
 
-    if candidates and random.random() < 0.7:
-        return random.choice(candidates)
+    if related and random.random() < 0.7:
+        return random.choice(related)
 
     return random.choice(user["memory"])
 
 # =========================
 # モード
 # =========================
-def decide_mode(user, a):
+def decide_mode(user):
     r = random.random()
 
     if user["flow"]["momentum"] > 0.6:
@@ -160,6 +158,34 @@ def decide_mode(user, a):
         return "light"
     else:
         return "free"
+
+# =========================
+# 自由発動判定（重要）
+# =========================
+def should_free(user, a):
+    s = user["score"]
+    m = user["flow"]["momentum"]
+
+    if m > 0.6 and s["boke"] > 0.6:
+        return True
+
+    if "w" in a["raw"] or "笑" in a["raw"]:
+        return random.random() < 0.6
+
+    return random.random() < 0.15
+
+# =========================
+# ボケタイプ
+# =========================
+def pick_boke_type(user):
+    s = user["score"]
+
+    if s["boke"] > 0.7:
+        return "強めにズラす"
+    elif s["tsukkomi"] > 0.6:
+        return "軽く皮肉る"
+    else:
+        return "ゆるくボケる"
 
 # =========================
 # 記憶使用率
@@ -174,7 +200,6 @@ def decide_memory_mix(user):
         base -= 0.1
 
     base -= user["score"]["memory_preference"] * 0.2
-
     base += random.uniform(-0.1,0.1)
 
     return max(0.3, min(0.9, base))
@@ -187,13 +212,13 @@ def generate(user, text, a):
     if len(text.strip()) < 2:
         return "何言うてるかちょい分からんわｗ"
 
-    mode = decide_mode(user, a)
+    mode = decide_mode(user)
     recall = recall_memory(user, a["topic"])
     ratio = decide_memory_mix(user)
 
     rules = ["関西弁"]
 
-    # 軸
+    # 軸（固定）
     rules.append("ユーザー発言の一つの要素を軸にする")
 
     # モード
@@ -212,9 +237,14 @@ def generate(user, text, a):
     if recall and random.random() > ratio:
         rules.append(f"過去の話題『{recall['topic']}』を軽く絡める")
 
-    # 笑い
-    if random.random() < user["score"]["boke"]:
-        rules.append("軸の要素を少しズラして面白くする")
+    # 自由ボケ（強化ポイント）
+    if mode in ["free","boke"] and should_free(user, a):
+        boke_type = pick_boke_type(user)
+        rules.append(f"{boke_type}で一瞬だけ発想を広げるが自然に戻す")
+
+    # 通常ボケ
+    elif random.random() < user["score"]["boke"]:
+        rules.append("軸を少しズラして軽く面白くする")
 
     # ツッコミ
     if a["gap"] and random.random() < user["score"]["tsukkomi"]:
