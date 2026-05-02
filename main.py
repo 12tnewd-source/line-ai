@@ -17,38 +17,55 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else None
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 
+# ===== 永続化ディレクトリ =====
+DATA_DIR = "user_data"
+os.makedirs(DATA_DIR, exist_ok=True)
+
 users = {}
 
 # =========================
-# 保存
+# ユーザー保存/読込
 # =========================
-def save():
+def save_user(uid, user):
     try:
-        with open("users.json","w",encoding="utf-8") as f:
-            json.dump(users,f,ensure_ascii=False)
-    except:
-        pass
+        path = os.path.join(DATA_DIR, f"{uid}.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(user, f, ensure_ascii=False)
+    except Exception as e:
+        print("保存エラー:", e)
 
-def load():
-    global users
-    try:
-        with open("users.json","r",encoding="utf-8") as f:
-            users=json.load(f)
-    except:
-        users={}
+def load_user(uid):
+    path = os.path.join(DATA_DIR, f"{uid}.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return None
 
 # =========================
 # ユーザー
 # =========================
 def get_user(uid):
     if uid not in users:
-        users[uid] = {
-            "memory":[],
-            "history":[],
-            "mood":0.0,
-            "relation":{"distance":0.0},
-            "style":{"playfulness":0.5}
-        }
+        loaded = load_user(uid)
+
+        if loaded:
+            users[uid] = loaded
+        else:
+            users[uid] = {
+                "memory":[],
+                "history":[],
+                "mood":0.0,
+                "relation":{"distance":0.0},
+                "style":{"playfulness":0.5},
+                "score":{
+                    "boke":0.5,
+                    "tsukkomi":0.5,
+                    "sensitivity":0.5
+                }
+            }
     return users[uid]
 
 # =========================
@@ -57,6 +74,22 @@ def get_user(uid):
 def update_history(user, user_text, ai_text):
     user["history"].append({"user":user_text,"ai":ai_text})
     user["history"] = user["history"][-10:]
+
+# =========================
+# スコア更新（反応ベース）
+# =========================
+def update_score(user, text):
+    s = user["score"]
+
+    if "w" in text or "笑" in text:
+        s["boke"] += 0.05
+        s["sensitivity"] += 0.03
+
+    if "なんで" in text or "いや" in text:
+        s["tsukkomi"] += 0.03
+
+    for k in s:
+        s[k] = min(1.0, s[k])
 
 # =========================
 # AI安全取得
@@ -91,10 +124,10 @@ def analyze(text):
         "topic":text[:8],
         "intent":"雑談",
         "energy":0.5,
-        "serious":0.5
+        "serious":0.5,
+        "gap":False
     }
 
-    # 簡易補強（軽量＆安定）
     if "？" in text or "?" in text:
         base["intent"] = "質問"
 
@@ -106,8 +139,6 @@ def analyze(text):
 
     if any(k in text for k in ["なんで", "意味わからん", "急に"]):
         base["gap"] = True
-    else:
-        base["gap"] = False
 
     return base
 
@@ -125,15 +156,28 @@ def update_relation(user, intent):
     user["relation"]["distance"] = min(1, user["relation"]["distance"])
 
 # =========================
-# 記憶
+# 記憶（タグ追加）
 # =========================
 def store_memory(user, text, analysis):
+
+    tag = "normal"
+    if analysis["intent"] == "質問":
+        tag = "question"
+    elif analysis["gap"]:
+        tag = "weird"
+    elif analysis["emotion"] < -0.3:
+        tag = "negative"
+    elif analysis["emotion"] > 0.4:
+        tag = "positive"
+
     user["memory"].append({
         "topic":analysis.get("topic",""),
         "detail":text,
-        "emotion":analysis.get("emotion",0)
+        "emotion":analysis.get("emotion",0),
+        "tag":tag
     })
-    user["memory"] = user["memory"][-20:]
+
+    user["memory"] = user["memory"][-30:]
 
 def recall_memory(user, topic):
     for m in reversed(user["memory"]):
@@ -173,31 +217,28 @@ def should_tsukkomi(analysis, user):
         return False
     if not analysis.get("gap"):
         return False
-    if analysis.get("serious",0) > 0.6:
-        return False
-    return random.random() < 0.6
+    return random.random() < user["score"].get("tsukkomi",0.5)
 
 # =========================
 # 応答生成
 # =========================
 def generate(user, text, analysis):
 
-    # 意味不明対策
     if len(text.strip()) < 2:
         return "ちょい何言うてるかわからんわｗ"
 
     role = decide_role(analysis, user)
     recall = recall_memory(user, analysis.get("topic"))
+    score = user["score"]
 
-    # ツッコミ（成立時のみ）
+    # ツッコミ（繋ぐ形）
     if should_tsukkomi(analysis, user):
         return random.choice([
-            "いやなんでやねんｗ",
-            "急すぎるやろｗ",
-            "どういう流れやねんそれｗ"
+            "いやなんでやねんｗで、どういうことなん？",
+            "急すぎるやろｗ何があったんｗ",
+            "流れバグってるやんｗもうちょい教えてや"
         ])
 
-    # ルール（性格ベース）
     rules = ["関西弁"]
 
     if analysis["energy"] > 0.5:
@@ -206,11 +247,17 @@ def generate(user, text, analysis):
     if user["relation"]["distance"] > 0.4:
         rules.append("少し砕ける")
 
-    if user["style"]["playfulness"] > 0.6:
-        if random.random() < user["style"]["playfulness"]:
-            rules.append("ちょい雑に")
+    # ボケ頻度（ユーザー依存）
+    if random.random() < score.get("boke",0.5):
+        rules.append("少しだけボケる")
 
-    # 会話生成
+    # ネガティブ対応（分岐）
+    if recall and recall["tag"] == "negative":
+        if score.get("sensitivity",0.5) > 0.6:
+            rules.append("少し寄り添う")
+        else:
+            rules.append("軽く流す")
+
     prompt = f"""
 ユーザー:{text}
 役割:{role}
@@ -229,6 +276,7 @@ def reply(uid, text):
 
     analysis = analyze(text)
 
+    update_score(user, text)  # ←追加（超重要）
     update_mood(user, analysis.get("emotion",0))
     update_relation(user, analysis.get("intent","雑談"))
     store_memory(user, text, analysis)
@@ -236,7 +284,7 @@ def reply(uid, text):
     ai_text = generate(user, text, analysis)
 
     update_history(user, text, ai_text)
-    save()
+    save_user(uid, user)  # ←ユーザー別保存
 
     return ai_text
 
@@ -306,5 +354,3 @@ if handler:
             event.reply_token,
             TextSendMessage(text=ai_text)
         )
-
-load()
